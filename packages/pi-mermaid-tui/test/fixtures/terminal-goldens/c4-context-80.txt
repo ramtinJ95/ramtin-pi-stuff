@@ -1,0 +1,14 @@
+    ┌──────────────────┐
+    │ Person: Reviewer │
+    └─────────┬────────┘
+              │
+              ▼reviews changes
+┌──────────────────────────┐
+│ Container: Review portal │
+│    — System: Product     │
+└─────────────┬────────────┘
+              │
+              ▼reads pull requests
+    ┌──────────────────┐
+    │ External: GitHub │
+    └──────────────────┘

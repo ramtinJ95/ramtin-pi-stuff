@@ -1,0 +1,8 @@
+╭ mermaid: flowchart ──────────────────╮
+│ flowchart LR                         │
+│   Read[Read] --> Parse[Parse] --> Va │
+│ lidate[Validate] --> Write[Write]    │
+╰──────────────────────────────────────╯
+This diagram is too wide for the
+available terminal width; Mermaid source
+is shown above.

@@ -1,0 +1,23 @@
+┌──────────────────────────┐
+│   Component: Handler —   │
+│ Container: API — System: │
+│         Product          │
+└─────────────┬────────────┘
+              │
+              ▼calls
+┌──────────────────────────┐
+│   Component: Service —   │
+│ Container: API — System: │
+│         Product          │
+└─────────────┬────────────┘
+              │
+              ▼publishes Job
+     ┌─────────────────┐
+     │ External: Queue │
+     └────────┬────────┘
+              │
+              ▼delivers Job
+   ┌─────────────────────┐
+   │ Container: Worker — │
+   │   System: Product   │
+   └─────────────────────┘
