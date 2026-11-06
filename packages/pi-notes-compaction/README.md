@@ -1,5 +1,7 @@
 # Pi Notes Compaction
 
+> Maintained fork of [`@howaboua/pi-notes-compaction`](https://github.com/IgorWarzocha/howaboua-pi-stuff) by Igor Warzocha, continued from upstream commit `5ede06b` after he stopped maintaining it. To switch, `pi remove npm:@howaboua/pi-notes-compaction` and install this package.
+
 Keep working across fresh context windows with local checkpoint notes, searchable session history and optional remote notes lookup. Works with any Pi model.
 
 ## Install
@@ -7,7 +9,7 @@ Keep working across fresh context windows with local checkpoint notes, searchabl
 Requires Pi 1.2.0 or newer and Node.js 22.18 or newer.
 
 ```sh
-pi install npm:@howaboua/pi-notes-compaction
+pi install npm:@ramtinj95/pi-notes-compaction
 ```
 
 Reload Pi, then ask the agent to save a checkpoint and start a new context window. It can read those notes and search earlier session history to continue.

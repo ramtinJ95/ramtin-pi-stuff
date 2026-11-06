@@ -5,7 +5,7 @@ import type {
 import type {
 	SharedContextRequest,
 	SharedContextResult,
-} from "@howaboua/pi-notes-compaction/context-sharing";
+} from "@ramtinj95/pi-notes-compaction/context-sharing";
 import { attachmentOwner, attachmentRoutes } from "./attachment-protocol.js";
 import type { AgentBoard } from "./board/host.js";
 import type { AgentFleet } from "./fleet/index.js";
@@ -21,24 +21,24 @@ export async function registerSharedAgentContext(
 	board: AgentBoard,
 ): Promise<SharedAgentContext> {
 	let api:
-		| typeof import("@howaboua/pi-notes-compaction/context-sharing")
+		| typeof import("@ramtinj95/pi-notes-compaction/context-sharing")
 		| undefined;
 	try {
-		api = await import("@howaboua/pi-notes-compaction/context-sharing");
+		api = await import("@ramtinj95/pi-notes-compaction/context-sharing");
 	} catch (error) {
 		const failure = error as { code?: string; message?: string };
 		const missing = failure.message?.match(
 			/Cannot find (?:package|module) ['"]([^'"]+)['"]/,
 		)?.[1];
-		const module = "@howaboua/pi-notes-compaction/context-sharing";
+		const module = "@ramtinj95/pi-notes-compaction/context-sharing";
 		const unavailable =
 			((failure.code === "ERR_MODULE_NOT_FOUND" ||
 				failure.code === "MODULE_NOT_FOUND") &&
-				(missing === "@howaboua/pi-notes-compaction" ||
+				(missing === "@ramtinj95/pi-notes-compaction" ||
 					missing === module ||
 					missing?.endsWith(`/${module}`))) ||
 			(failure.code === "ERR_PACKAGE_PATH_NOT_EXPORTED" &&
-				failure.message?.includes("@howaboua/pi-notes-compaction") &&
+				failure.message?.includes("@ramtinj95/pi-notes-compaction") &&
 				failure.message.includes("./context-sharing"));
 		if (!unavailable)
 			throw new Error(

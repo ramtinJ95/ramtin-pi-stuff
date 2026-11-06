@@ -1,5 +1,7 @@
 # pi-shepherdr
 
+> Maintained fork of [`@howaboua/pi-shepherdr`](https://github.com/IgorWarzocha/howaboua-pi-stuff) by Igor Warzocha, continued from upstream commit `5ede06b` after he stopped maintaining it. To switch, `pi remove npm:@howaboua/pi-shepherdr` and install this package.
+
 One persistent agent system for ordinary Pi, Code Mode and Notebook Mode.
 
 Shepherdr combines a monitored [Herdr](https://herdr.dev) fleet with blocking and asynchronous agent calls. It registers one routed `agents` tool in normal Pi. When Pi Codex is installed, the same definition, renderer and implementation become `tools.agents` inside Code and Notebook Mode.
@@ -11,7 +13,7 @@ With Pi Codex's compatible custom developer-message API active, asynchronous wor
 ## Install
 
 ```bash
-pi install npm:@howaboua/pi-shepherdr
+pi install npm:@ramtinj95/pi-shepherdr
 ```
 
 Requires Pi 1.2.0 or newer and Node.js 22.18 or newer. Run Pi inside Herdr Core 0.1.14 or newer, or the Herdr app, to use the new Herdr backend. Shepherdr reports Pi status to Core and discovers other Pi sessions with Shepherdr installed.
@@ -222,6 +224,7 @@ Shepherdr works without Notes or PCC. A target without active Notes sharing stil
 ## Profiles
 
 On first load, Shepherdr installs three editable profiles:
+
 - `general` uses `openai-codex/gpt-6-sol` with `high` thinking for implementation
 - `explorer` uses `openai-codex/gpt-6-luna` with `high` thinking for read-only discovery
 - `reviewer` uses `openai-codex/gpt-6-luna` with `xhigh` thinking for generic read-only review
@@ -250,6 +253,7 @@ That directory is authoritative after initialization. Edit a profile to change i
 `prompt` is read as system-prompt text. An optional `prepare` module may export `prepare({ cwd, message, base, local })` and return the worker message. Preparation runs on the controlling machine before dispatch; `local` says whether that machine also hosts the worker.
 
 Optional profile settings:
+
 - `blocking`: `true` forces blocking spawns, `false` forces asynchronous spawns. Omission respects the call's `blocking` value, which defaults to `false`. This does not affect `assign` to existing agents.
 - `share_context`: `false` opts new spawns out of shared notes and history. Omission or `true` follows the controller setting.
 

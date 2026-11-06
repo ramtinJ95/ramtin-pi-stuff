@@ -1,18 +1,18 @@
 {
-	"name": "@howaboua/pi-shepherdr",
+	"name": "@ramtinj95/pi-shepherdr",
 	"version": "0.2.27",
 	"description": "Persistent blocking and asynchronous Pi agents through Herdr.",
 	"type": "module",
 	"license": "MIT",
 	"author": "Igor Warzocha",
-	"homepage": "https://github.com/IgorWarzocha/howaboua-pi-stuff/tree/main/packages/pi-shepherdr#readme",
+	"homepage": "https://github.com/ramtinJ95/ramtin-pi-stuff/tree/main/packages/pi-shepherdr#readme",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/IgorWarzocha/howaboua-pi-stuff.git",
+		"url": "git+https://github.com/ramtinJ95/ramtin-pi-stuff.git",
 		"directory": "packages/pi-shepherdr"
 	},
 	"bugs": {
-		"url": "https://github.com/IgorWarzocha/howaboua-pi-stuff/issues"
+		"url": "https://github.com/ramtinJ95/ramtin-pi-stuff/issues"
 	},
 	"keywords": [
 		"pi-package",
@@ -42,7 +42,7 @@
 		"pack:dry": "npm pack --dry-run"
 	},
 	"peerDependencies": {
-		"@howaboua/pi-notes-compaction": ">=0.0.14",
+		"@ramtinj95/pi-notes-compaction": ">=0.0.14",
 		"@howaboua/pi-codex-conversion": ">=4.0.9",
 		"@earendil-works/pi-ai": ">=1.1.0",
 		"@earendil-works/pi-coding-agent": ">=1.5.0",
@@ -50,7 +50,7 @@
 		"typebox": "*"
 	},
 	"peerDependenciesMeta": {
-		"@howaboua/pi-notes-compaction": {
+		"@ramtinj95/pi-notes-compaction": {
 			"optional": true
 		},
 		"@howaboua/pi-codex-conversion": {
@@ -61,7 +61,7 @@
 		"@howaboua/pi-agent-board": "0.0.5"
 	},
 	"devDependencies": {
-		"@howaboua/pi-notes-compaction": "0.0.14",
+		"@ramtinj95/pi-notes-compaction": "0.0.14",
 		"@howaboua/pi-codex-conversion": "4.0.9",
 		"@biomejs/biome": "^2.6.3",
 		"@earendil-works/pi-ai": "1.5.0",

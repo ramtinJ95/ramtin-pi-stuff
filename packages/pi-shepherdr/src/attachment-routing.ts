@@ -4,7 +4,7 @@ import type {
 	ContextSharingService,
 	SharedContextRequest,
 	SharedContextResult,
-} from "@howaboua/pi-notes-compaction/context-sharing";
+} from "@ramtinj95/pi-notes-compaction/context-sharing";
 import type { AttachmentNotes } from "./attachment-notes.js";
 import {
 	type AttachmentRoute,

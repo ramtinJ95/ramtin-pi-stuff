@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { ContextAgentIdentity } from "@howaboua/pi-notes-compaction/context-sharing";
+import type { ContextAgentIdentity } from "@ramtinj95/pi-notes-compaction/context-sharing";
 import {
 	attachmentOwner,
 	attachmentRoutes,

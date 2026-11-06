@@ -1,12 +1,12 @@
 {
-	"name": "@howaboua/pi-notes-compaction",
+	"name": "@ramtinj95/pi-notes-compaction",
 	"version": "0.0.14",
 	"publishConfig": {
 		"access": "public"
 	},
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/IgorWarzocha/howaboua-pi-stuff.git",
+		"url": "git+https://github.com/ramtinJ95/ramtin-pi-stuff.git",
 		"directory": "packages/pi-notes-compaction"
 	},
 	"files": [
@@ -56,5 +56,6 @@
 	"exports": {
 		".": "./src/index.ts",
 		"./context-sharing": "./src/context-sharing.ts"
-	}
+	},
+	"homepage": "https://github.com/ramtinJ95/ramtin-pi-stuff/tree/main/packages/pi-notes-compaction#readme"
 }

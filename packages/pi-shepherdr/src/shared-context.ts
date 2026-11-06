@@ -13,7 +13,7 @@ import type {
 	ContextSharingService,
 	SharedContextRequest,
 	SharedContextResult,
-} from "@howaboua/pi-notes-compaction/context-sharing";
+} from "@ramtinj95/pi-notes-compaction/context-sharing";
 import { Check } from "typebox/value";
 import { AgentAttachment } from "./attachment.js";
 import {

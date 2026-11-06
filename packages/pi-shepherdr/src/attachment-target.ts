@@ -8,7 +8,7 @@ import {
 	binding,
 	canonicalBoardBinding,
 } from "@howaboua/pi-agent-board/integration";
-import type { ContextSharingService } from "@howaboua/pi-notes-compaction/context-sharing";
+import type { ContextSharingService } from "@ramtinj95/pi-notes-compaction/context-sharing";
 import type { Static } from "typebox";
 import { Check } from "typebox/value";
 import { AttachmentNotes } from "./attachment-notes.js";

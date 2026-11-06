@@ -4,7 +4,7 @@ import type {
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import type { CodexAgentRelationshipService } from "@howaboua/pi-codex-conversion/agent-relationship";
-import type { ContextSharingService } from "@howaboua/pi-notes-compaction/context-sharing";
+import type { ContextSharingService } from "@ramtinj95/pi-notes-compaction/context-sharing";
 import { nativeAgentName } from "./agent-identity.js";
 import type { ConnectedMachine } from "./fleet/index.js";
 import { sessionPath } from "./herdr.js";
