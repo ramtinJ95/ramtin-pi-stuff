@@ -8,8 +8,10 @@ const theme = {
 	bold: (text: string) => `*${text}*`,
 };
 
+const keys = { keyText: () => "", keyHint: (_key: string, description: string) => description };
+
 function render(note: Note, expanded: boolean, width = 80): string[] {
-	const component = renderNote({ type: "custom", customType: "nexus", data: note } as never, { expanded }, theme as never)!;
+	const component = renderNote({ type: "custom", customType: "nexus", data: note } as never, { expanded, ...keys }, theme as never)!;
 	return component.render(width).map((line) => line.trimEnd()).filter((line) => line !== "");
 }
 
@@ -42,7 +44,7 @@ describe("nexus notes", () => {
 
 	test("long lines wrap to the width", () => {
 		const real = { fg: (_c: string, t: string) => t, bg: (_c: string, t: string) => t, bold: (t: string) => t };
-		const component = renderNote({ type: "custom", customType: "nexus", data: { title: "t", body: "word ".repeat(100) } } as never, { expanded: false }, real as never)!;
+		const component = renderNote({ type: "custom", customType: "nexus", data: { title: "t", body: "word ".repeat(100) } } as never, { expanded: false, ...keys }, real as never)!;
 		for (const line of component.render(40)) expect(visibleWidth(line)).toBeLessThanOrEqual(40);
 	});
 });
