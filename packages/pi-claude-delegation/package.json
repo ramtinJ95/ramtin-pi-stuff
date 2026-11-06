@@ -1,0 +1,74 @@
+{
+  "name": "@ramtinj95/pi-claude-delegation",
+  "version": "0.2.0",
+  "private": false,
+  "description": "Pi extension providing Claude Code models and explicit foreground/background Claude delegation tools.",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "extension",
+    "claude-code",
+    "claude-agent-sdk",
+    "delegation"
+  ],
+  "author": "ramtinJ95",
+  "contributors": [
+    "Eli Dickinson (original pi-claude-bridge author)"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ramtinJ95/pi-claude-delegation.git"
+  },
+  "homepage": "https://github.com/ramtinJ95/pi-claude-delegation#readme",
+  "bugs": {
+    "url": "https://github.com/ramtinJ95/pi-claude-delegation/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE",
+    "assets",
+    "docs/PI-COMPATIBILITY.md"
+  ],
+  "scripts": {
+    "test:unit": "node --import tsx --import ./tests/lib/setup.mjs --test tests/unit-*.mjs",
+    "test": "set -a && [ -f .env.test ] && . .env.test; set +a && npm run test:unit && tests/int-smoke.sh && tests/int-multi-turn.sh && tests/int-cache.sh && node --import tsx --test tests/int-*.mjs",
+    "test:usage": "tests/usage-test.sh",
+    "typecheck": "tsc --noEmit"
+  },
+  "type": "module",
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.281",
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "cc-session-io": "^0.4.0",
+    "change-case": "^5.4.4"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@anthropic-ai/sdk": "^0.93.0",
+    "@earendil-works/pi-ai": "1.1.0",
+    "@earendil-works/pi-coding-agent": "1.1.0",
+    "@earendil-works/pi-tui": "1.1.0",
+    "@types/node": "^24.13.2",
+    "tsx": "^4.22.4",
+    "typebox": "1.3.27",
+    "typescript": "^6.0.3"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  }
+}
