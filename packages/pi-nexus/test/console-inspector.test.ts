@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { sessionLines } from "../extensions/nexus/console/inspector.ts";
+import { detailLines, sessionLines } from "../extensions/nexus/console/inspector.ts";
 import { noSessionChanges } from "../extensions/nexus/console/model.ts";
 import type { Session } from "../extensions/nexus/contract.ts";
 import { detail, piTheme, plain } from "./console-fixture.ts";
@@ -31,4 +31,27 @@ test.each([
 		expect(narrow.rows).toHaveLength(3);
 		for (const line of narrow.lines) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
 	}
+});
+
+test("Pylon shows the thread's review, and each reason it left to the person", () => {
+	const review = { id: "rv-0a1b2c3d", reviewer: "th-0000000000ee", models: { reviewer: "gpt-6" }, maxRounds: 3, rounds: [{}, {}], land: { requestedBy: "mac" }, phase: { kind: "needs-person", reasons: ["The check failed at the approved head.", "A Claude reviewer's approval never lands."] } };
+	const text = plain(detailLines(piTheme(), { ...detail, attention: "decision", review }, [], detail, 0, 200));
+	expect(text).toContain("Nexus review rv-0a1b2c3d: needs-person, round 2 of 3, by th-0000000000ee on gpt-6, landing when approved");
+	expect(text).toContain("Needs you: The check failed at the approved head.");
+	expect(text).toContain("Needs you: A Claude reviewer's approval never lands.");
+	expect(plain(detailLines(piTheme(), { ...detail, review: null }, [], detail, 0, 200))).not.toContain("Nexus review");
+});
+
+test("Pylon says to answer each open question on the dashboard, by its first line, and who answers it", () => {
+	const question = (text: string, answerer: string, answer: { option: string } | null) => ({ id: `qn-${text.length}`, thread: detail.thread.id, text, options: ["Yes", "No"], reserved: null, answerer, askedAt: 1, answer });
+	const questions = [
+		question("Rebuild the pylon image?\nIt takes ten minutes.", "person", null),
+		question("Deploy the control plane?", "deployer", null),
+		question("Keep the old branch?", "person", { option: "Yes" }),
+	];
+	const text = plain(detailLines(piTheme(), { ...detail, attention: "decision", questions }, [], detail, 0, 200));
+	expect(text.split("\n").filter((l) => l.includes("Needs you"))).toEqual([
+		"   Needs you: Rebuild the pylon image? (answer it on the dashboard)",
+		"   Needs you: Deploy the control plane? (a deployer answers it on the dashboard)",
+	]);
 });

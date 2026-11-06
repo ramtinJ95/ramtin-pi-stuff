@@ -1,17 +1,17 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
-import { addProject, closeSession, createNexus, listProjects, listThreads, openSession, readThread, sendText, showThread, startThread, threadId, unpreviewPort, type Nexus } from "./cli.ts";
+import { addProject, closeSession, createNexus, listProjects, listThreads, openSession, readConversation, readThread, sendText, showThread, startThread, threadId, unpreviewPort, type Nexus } from "./cli.ts";
 import { actions, complete, parseCommand, usage, type NexusCommand } from "./commands.ts";
 import { Console, userDisplay } from "./console/index.ts";
-import { attachCommand, attachHint, chips, noteParked, pausedRefusal, sessionLook, sessionName, sessionPlace, summary, type Parked } from "./console/model.ts";
+import { attachCommand, attachHint, decisions, pausedRefusal, sessionLook, sessionName, sessionPlace, stripNotice, summary } from "./console/model.ts";
 import { Strip } from "./console/strip.ts";
 import type { Display } from "./console/transcript.ts";
 import { follow, type FollowEnd } from "./follow.ts";
 import { noteType, renderNote, type Note } from "./render.ts";
 import { nexusTools } from "./tools.ts";
 import { harnesses, type ThreadRow } from "./contract.ts";
-import { emptyView, findThread, NexusError, stateLine, threadRows, transcript, type ThreadView } from "./thread.ts";
+import { claudeTranscript, emptyView, findThread, NexusError, stateLine, threadRows, transcript, type ThreadView } from "./thread.ts";
 import { inScope, Scope } from "./scope.ts";
-import { defaultSettingsFile, defaultViewedFile, settingsFile, viewedFile, type SettingsStore, type Viewed } from "./store.ts";
+import { defaultSettingsFile, forgetLooks, settingsFile, type SettingsStore } from "./store.ts";
 
 const statusEveryMs = 30_000;
 
@@ -41,12 +41,11 @@ class NexusSession {
 	private readonly follows = new Map<string, { stop: AbortController; view: ThreadView }>();
 	/** The threads last listed, for completion and titles. */
 	threads: ThreadRow[] = [];
+	/** Whether a poll has listed the threads, before which the strip says why they could not be. */
+	private listed = false;
 	/** Whether the status line's summary and the strip show, and so whether the session polls the threads. */
 	private strip: boolean;
-	/** The threads seen parked, from the console's open thread and the follows. */
-	private readonly parked: Parked = new Map();
 	private readonly console: Console;
-	private readonly viewed: Viewed;
 	private readonly settings: SettingsStore;
 	private readonly scope: Scope;
 
@@ -56,10 +55,10 @@ class NexusSession {
 		display: (cwd: string) => Display,
 		stores: Stores,
 	) {
-		({ viewed: this.viewed, settings: this.settings } = stores);
+		this.settings = stores.settings;
 		this.strip = this.settings.read().strip;
 		this.scope = new Scope(this.settings, (message, level) => this.ui?.notify(message, level), () => this.show());
-		this.console = new Console(nexus, this.closed.signal, this.viewed, this.parked, this.scope, (message) => this.ui?.notify(message, "warning"), this.settings, display);
+		this.console = new Console(nexus, this.closed.signal, this.scope, (message) => this.ui?.notify(message, "warning"), this.settings, display);
 	}
 
 	/** Takes the session's UI, and polls the threads while the strip setting is on. */
@@ -99,38 +98,34 @@ class NexusSession {
 	}
 
 	/**
-	 * Lists the threads for completion and the stored looks, and while the session polls, shows the summary and the
-	 * strip. A poll ends when the polling stops; a list after a command with the strip off ends with the session.
+	 * Lists the threads for completion, and while the session polls, shows the summary and the strip. A poll ends when
+	 * the polling stops; a list after a command with the strip off ends with the session.
 	 */
 	async refresh(): Promise<void> {
 		if (this.closed.signal.aborted) return;
 		const polling = this.polling;
 		const signal = polling ? AbortSignal.any([polling.signal, this.closed.signal]) : this.closed.signal;
 		try {
-			const listedAt = Date.now();
 			this.threads = await listThreads(this.nexus, [], signal);
-			// The list leaves out only deleted threads, whose looks no marker reads again. A prune that cannot write
-			// keeps them, which costs nothing, and the next look says the store cannot be written.
-			try {
-				this.viewed.prune(new Set(this.threads.map((t) => t.id)), listedAt);
-			} catch {}
 			if (polling === undefined || signal.aborted) return;
+			this.listed = true;
 			this.show();
 		} catch (err) {
-			if (polling !== undefined && !signal.aborted) this.ui?.setStatus("nexus", `nexus ${err instanceof NexusError ? err.kind : "failed"}`);
+			if (polling === undefined || signal.aborted) return;
+			this.ui?.setStatus("nexus", `nexus ${err instanceof NexusError ? err.kind : "failed"}`);
+			// A control plane too old for the CLI fails every read, so the person would otherwise never learn why.
+			if (!this.listed) this.ui?.setWidget("nexus-strip", (_tui, theme) => new Strip(theme, { kind: "failure", message: errorText(err) }, this.scope.project));
 		}
 	}
 
 	/** Shows the summary and the strip of the threads last listed in the project shown, while the session polls. */
 	private show(): void {
-		if (this.polling === undefined) return;
+		if (this.polling === undefined || !this.listed) return;
 		const project = this.scope.project;
 		const threads = inScope(this.threads, project);
-		const marks = { seen: this.viewed.read(), parked: this.parked };
-		this.ui?.setStatus("nexus", summary(threads, marks, project));
-		const shown = chips(threads, marks);
-		const now = Date.now();
-		this.ui?.setWidget("nexus-strip", shown.length > 0 ? (_tui, theme) => new Strip(theme, shown, now, project) : undefined);
+		this.ui?.setStatus("nexus", summary(threads, project));
+		const notice = stripNotice(threads);
+		this.ui?.setWidget("nexus-strip", notice === null ? undefined : (_tui, theme) => new Strip(theme, { kind: "notice", notice }, project));
 	}
 
 	private note(note: Note): void {
@@ -154,7 +149,6 @@ class NexusSession {
 			note: (note: Note) => this.note(note),
 			state: (view: ThreadView) => {
 				entry.view = view;
-				noteParked(this.parked, thread, view.state, Date.now());
 				this.renderFollows();
 			},
 		};
@@ -212,21 +206,36 @@ class NexusSession {
 			}
 			case "send": {
 				const thread = await id(command.thread);
-				await sendText(nexus, thread, command.text, false, signal);
-				ctx.ui.notify(`Sent to ${thread}.`, "info");
-				return this.startFollow(thread, false);
+				const sent = await sendText(nexus, thread, command.text, false, signal);
+				if (!("claude" in sent)) {
+					ctx.ui.notify(`Sent to ${thread}.`, "info");
+					return this.startFollow(thread, false);
+				}
+				// A watch never sees a Claude worker's reply, so nothing follows it.
+				const { outcome, resumed } = sent.claude;
+				const done = outcome === "queued" ? `Queued for Claude in ${thread}, which takes it at its next step.` : `Sent to Claude in ${thread}.`;
+				return ctx.ui.notify(`${done}${resumed ? " Its session was resumed to take it." : ""} /nexus open ${thread} shows its transcript.`, "info");
 			}
 			case "show": {
 				const thread = await id(command.thread);
-				const view = await readThread(nexus, thread, signal);
 				const title = this.threads.find((t) => t.id === thread)?.title;
-				return this.note({
-					title: `${thread}${title ? ` ${title}` : ""}: ${stateLine(view.state)}`,
-					body: transcript(view.entries, 20_000),
-				});
+				const heading = (line: string) => `${thread}${title ? ` ${title}` : ""}: ${line}`;
+				const detail = await showThread(nexus, thread, signal);
+				const decide = decisions(detail).map((reason) => `Needs you: ${reason}\n\n`).join("");
+				if (detail.claudeWorker !== undefined) {
+					const [view, conversation] = await Promise.all([readThread(nexus, thread, signal), readConversation(nexus, thread, signal)]);
+					return this.note({ title: heading(stateLine({ ...view.state, run: conversation.working ? "working" : "idle" })), body: decide + claudeTranscript(conversation, 20_000) });
+				}
+				const view = await readThread(nexus, thread, signal);
+				return this.note({ title: heading(stateLine(view.state)), body: decide + transcript(view.entries, 20_000) });
 			}
-			case "follow":
-				return this.startFollow(await id(command.thread), true);
+			case "follow": {
+				const thread = await id(command.thread);
+				if ((await showThread(nexus, thread, signal)).claudeWorker !== undefined) {
+					throw new NexusError("invalid", `nexus watch does not stream a Claude worker's transcript, so ${thread} cannot be followed. /nexus open ${thread} shows it.`);
+				}
+				return this.startFollow(thread, true);
+			}
 			case "unfollow": {
 				// Matched against the follows themselves, so an unfollow works while Nexus is down.
 				const thread = command.thread === undefined ? undefined : findThread(command.thread, [...this.follows.keys()]);
@@ -348,10 +357,15 @@ class NexusSession {
 	}
 }
 
-/** When each thread was last looked at, and the console's settings, kept in pi's agent directory. */
+/** The console's settings, kept in pi's agent directory. */
 interface Stores {
-	viewed: Viewed;
 	settings: SettingsStore;
+}
+
+/** The user's own stores, once the looks store that the control plane's seen state replaced is gone. */
+function defaultStores(): Stores {
+	forgetLooks();
+	return { settings: settingsFile(defaultSettingsFile()) };
 }
 
 /** `display` reads pi's display settings, and a test replaces the stores so it never touches the user's own. */
@@ -359,24 +373,52 @@ export default function nexusExtension(
 	pi: ExtensionAPI,
 	nexus: Nexus = createNexus(),
 	display: (cwd: string) => Display = userDisplay,
-	stores: Stores = { viewed: viewedFile(defaultViewedFile()), settings: settingsFile(defaultSettingsFile()) },
+	stores: Stores = defaultStores(),
 ) {
 	const session = new NexusSession(pi, nexus, display, stores);
 	pi.registerEntryRenderer(noteType, renderNote);
-	for (const tool of nexusTools(nexus)) {
-		pi.registerTool({
-			...tool,
-			async execute(toolCallId, params, signal, onUpdate, ctx) {
-				session.attach(ctx.ui);
-				try {
-					const owned = signal ? AbortSignal.any([signal, session.closed.signal]) : session.closed.signal;
-					return await tool.execute(toolCallId, params, owned, onUpdate, ctx);
-				} finally {
-					void session.refresh();
-				}
-			},
-		});
-	}
+	let exposure: "deferred" | "direct" = "deferred";
+	let fallbackActivated = new Set<string>();
+	const tools = nexusTools(nexus);
+	const registerTools = () => {
+		for (const tool of tools) {
+			pi.registerTool({
+				...tool,
+				exposure,
+				async execute(toolCallId, params, signal, onUpdate, ctx) {
+					session.attach(ctx.ui);
+					try {
+						const owned = signal ? AbortSignal.any([signal, session.closed.signal]) : session.closed.signal;
+						return await tool.execute(toolCallId, params, owned, onUpdate, ctx);
+					} finally {
+						void session.refresh();
+					}
+				},
+			});
+		}
+	};
+	registerTools();
+	const reconcileDiscovery = () => {
+		// Builtins load after extensions; an inactive or replaced search cannot discover our tools.
+		const searchable = pi.getAllTools?.().some((tool) => tool.name === "tool_search" && tool.sourceInfo?.path === "builtin:tool-search")
+			&& pi.getActiveTools().includes("tool_search");
+		const next = searchable ? "deferred" : "direct";
+		if (next !== exposure) {
+			const active = pi.getActiveTools?.() ?? [];
+			exposure = next;
+			registerTools();
+			if (next === "direct") {
+				fallbackActivated = new Set((pi.getActiveTools?.() ?? []).filter((name) => tools.some((tool) => tool.name === name) && !active.includes(name)));
+			} else {
+				// Re-registering as deferred preserves pi's active set. Undo only our fallback's additions.
+				if (fallbackActivated.size > 0) pi.setActiveTools(active.filter((name) => !fallbackActivated.has(name)));
+				fallbackActivated.clear();
+			}
+		}
+	};
+	pi.on("before_agent_start", reconcileDiscovery);
+	pi.on("session_tree", reconcileDiscovery);
+	pi.on("model_select", reconcileDiscovery);
 	pi.registerCommand("nexus", {
 		description: "Drive Nexus threads: list, new, send, show, follow, archive, delete and more",
 		getArgumentCompletions: (prefix) => complete(prefix, session.threads),
@@ -395,6 +437,7 @@ export default function nexusExtension(
 	});
 	// Print and JSON modes have no status line or widgets to fill.
 	pi.on("session_start", (_event, ctx) => {
+		reconcileDiscovery();
 		if (ctx.hasUI) session.start(ctx.ui);
 	});
 	pi.on("session_shutdown", () => session.shutdown());

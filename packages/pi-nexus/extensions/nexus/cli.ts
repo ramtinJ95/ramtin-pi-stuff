@@ -4,9 +4,10 @@
  */
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
+import { setTimeout as sleep } from "node:timers/promises";
 import { Type } from "typebox";
-import { Changes, Diff, NodeSummary, OpenedSession, parse, parseDetail, Preview, Project, SessionClosed, Thread, ThreadRow, Unpreviewed, watchEvents, type ThreadState, type WatchEvent } from "./contract.ts";
-import { emptyView, isThreadId, NexusError, isSettled, portBusy, reduce, resolveThread, type ErrorKind, type ThreadView } from "./thread.ts";
+import { Changes, Diff, NodeSummary, OpenedSession, parse, parseConversation, parseDetail, Preview, Project, Seen, Sent, SessionClosed, Thread, ThreadRow, Unpreviewed, type ThreadDetail, watchEvents, type Base, type ClaudeConversation, type ThreadState, type WatchEvent } from "./contract.ts";
+import { emptyView, hasWorkerEnded, isThreadId, isWorkerIdle, NexusError, isSettled, portBusy, reduce, resolveThread, type ErrorKind, type ThreadView } from "./thread.ts";
 
 export interface Nexus {
 	/** The CLI binary this runs, which a command a person runs themselves names too. */
@@ -149,19 +150,29 @@ export function createNexus(bin: string = defaultBin()): Nexus {
 
 export async function listThreads(nexus: Nexus, args: readonly string[] = [], signal?: AbortSignal): Promise<ThreadRow[]> {
 	const rows = parse(Type.Array(Type.Unknown()), await nexus.run(["threads", ...args], signal), "nexus threads");
-	return rows.map((row, i) => {
-		const id = (row as { id?: unknown } | null)?.id;
-		return parse(ThreadRow, row, `nexus threads' row for ${typeof id === "string" ? id : `its item ${i}`}`);
-	});
+	try {
+		return rows.map((row, i) => {
+			const id = (row as { id?: unknown } | null)?.id;
+			return parse(ThreadRow, row, `nexus threads' row for ${typeof id === "string" ? id : `its item ${i}`}`);
+		});
+	} catch (err) {
+		throw await seenless(nexus, err, signal);
+	}
 }
 
-/** Starts a thread. `=` keeps a value that starts with a dash from reading as a flag. The CLI needs a title or a message. */
+/**
+ * Starts a thread. `=` keeps a value that starts with a dash from reading as a flag. The CLI needs a title, a message or
+ * a Claude prompt. `claude` starts a Claude Code worker with that first prompt, which needs CLI 0.15.0, and `model`
+ * picks its model, which needs CLI 0.16.0.
+ */
 export async function startThread(
 	nexus: Nexus,
-	start: { project: string; message?: string; title?: string; node?: string; branch?: string },
+	start: { project: string; message?: string; title?: string; node?: string; branch?: string; claude?: string; model?: string },
 	signal?: AbortSignal,
 ): Promise<Thread> {
-	const flags = (["message", "title", "node", "branch"] as const).flatMap((key) => (start[key] ? [`--${key}=${start[key]}`] : []));
+	if (start.model) await requireVersion(nexus, [0, 16, 0], "choosing a Claude Code worker's model", signal);
+	else if (start.claude) await requireVersion(nexus, [0, 15, 0], "starting a Claude Code worker", signal);
+	const flags = (["message", "claude", "model", "title", "node", "branch"] as const).flatMap((key) => (start[key] ? [`--${key}=${start[key]}`] : []));
 	return parse(Thread, await nexus.run(["start", `--project=${start.project}`, ...flags], signal), "nexus start");
 }
 
@@ -169,23 +180,72 @@ export async function startThread(
  * Sends `text` as it is, after `--` so that no part of it reads as a flag. A retry of a send whose reply was lost
  * passes the same `requestId`, so the API takes it as the same message.
  */
-export const sendText = (nexus: Nexus, thread: string, text: string, steer: boolean, signal?: AbortSignal, requestId?: string) =>
-	nexus.run(["send", thread, ...(steer ? ["--steer"] : []), ...(requestId ? [`--request-id=${requestId}`] : []), "--", text], signal);
+export const sendText = async (nexus: Nexus, thread: string, text: string, steer: boolean, signal?: AbortSignal, requestId?: string): Promise<Sent> =>
+	parse(Sent, await nexus.run(["send", thread, ...(steer ? ["--steer"] : []), ...(requestId ? [`--request-id=${requestId}`] : []), "--", text], signal), "nexus send");
 
-export const showThread = async (nexus: Nexus, thread: string, signal?: AbortSignal) =>
-	parseDetail(await nexus.run(["show", thread], signal), `nexus show ${thread}`);
-
-export async function readChanges(nexus: Nexus, thread: string, uncommitted: boolean, signal?: AbortSignal): Promise<Changes> {
+export async function showThread(nexus: Nexus, thread: string, signal?: AbortSignal): Promise<ThreadDetail> {
+	const detail = await nexus.run(["show", thread], signal);
 	try {
-		return parse(Changes, await nexus.run(["changes", ...(uncommitted ? ["--uncommitted"] : []), "--", thread], signal), "nexus changes");
+		return parseDetail(detail, `nexus show ${thread}`);
+	} catch (err) {
+		throw await seenless(nexus, err, signal);
+	}
+}
+
+/**
+ * `err`, or for a reply without the seen state, `seenAt`, `lastReplyAt` and `attention`, from a CLI older than 0.10.0,
+ * the version it needs. A newer CLI's reply without them is the control plane's to fix, so its error stands.
+ */
+async function seenless(nexus: Nexus, err: unknown, signal?: AbortSignal): Promise<unknown> {
+	if (!(err instanceof NexusError && err.kind === "contract" && /has no (?:\[\d+\]\.)?(?:seenAt|lastReplyAt|attention),/.test(err.message))) return err;
+	try {
+		await requireVersion(nexus, [0, 10, 0], "reading when replies were seen", signal);
+	} catch (old) {
+		return old;
+	}
+	return err;
+}
+
+/** The flag that picks `base`, after the version check `turn` needs. `--turn` came with CLI 0.11.0. */
+async function baseFlags(nexus: Nexus, base: Base["kind"], signal?: AbortSignal): Promise<string[]> {
+	if (base === "head") return ["--uncommitted"];
+	if (base === "start") return [];
+	await requireVersion(nexus, [0, 11, 0], "reading the latest turn's changes", signal);
+	return ["--turn"];
+}
+
+export async function readChanges(nexus: Nexus, thread: string, base: Base["kind"], signal?: AbortSignal): Promise<Changes> {
+	const flags = await baseFlags(nexus, base, signal);
+	try {
+		return parse(Changes, await nexus.run(["changes", ...flags, "--", thread], signal), "nexus changes");
 	} catch (err) { throw newer(err, "changes", "reading changes", "0.6.0", true); }
 }
 
-export async function readDiff(nexus: Nexus, thread: string, paths: readonly string[], uncommitted: boolean, signal?: AbortSignal): Promise<Diff> {
+export async function readDiff(nexus: Nexus, thread: string, paths: readonly string[], base: Base["kind"], signal?: AbortSignal): Promise<Diff> {
+	const flags = await baseFlags(nexus, base, signal);
 	try {
-		return parse(Diff, await nexus.run(["diff", ...(uncommitted ? ["--uncommitted"] : []), "--", thread, ...paths], signal), "nexus diff");
+		return parse(Diff, await nexus.run(["diff", ...flags, "--", thread, ...paths], signal), "nexus diff");
 	} catch (err) { throw newer(err, "diff", "reading diffs", "0.6.0", true); }
 }
+
+/**
+ * Marks seen, for every client, the reply that ended at `shown`, the one a client showed, which needs CLI 0.19.0 so a
+ * reply that lands after it stays unread. It never wakes a pylon and is not human activity.
+ */
+export async function markSeen(nexus: Nexus, thread: string, shown: number, signal?: AbortSignal): Promise<void> {
+	await requireVersion(nexus, [0, 19, 0], "marking a reply seen", signal);
+	parse(Seen, await nexus.run(["seen", `--last-reply-at=${shown}`, "--", thread], signal), "nexus seen");
+}
+
+/**
+ * A Claude worker's transcript, which needs CLI 0.17.0. Reading never wakes a pylon and is not human activity, but
+ * each read makes the control plane read the pylon for up to 5 seconds.
+ */
+export async function readConversation(nexus: Nexus, thread: string, signal?: AbortSignal): Promise<ClaudeConversation> {
+	await requireVersion(nexus, [0, 17, 0], "reading a Claude worker's transcript", signal);
+	return parseConversation(await nexus.run(["conversation", "--", thread], signal), `nexus conversation ${thread}`);
+}
+
 /** The `thread:port` pairs a publish or unpublish runs on, for each Nexus the session drives. */
 const portsChanging = new WeakMap<Nexus, Set<string>>();
 
@@ -241,6 +301,45 @@ export async function addProject(nexus: Nexus, add: { id: string; repoUrl: strin
 	}
 }
 
+export interface ModelProject {
+	id: string;
+	repo_url?: string;
+	scratch?: boolean;
+	node?: string;
+	branch?: string;
+	cpus?: number;
+	memory_gib?: number;
+	disk_gib?: number;
+	allow_hosts?: string[];
+	logins?: ("claude" | "chatgpt")[];
+	github?: boolean;
+}
+
+export async function addModelProject(nexus: Nexus, add: ModelProject, signal?: AbortSignal): Promise<Project> {
+	if (!add.id.trim()) throw new NexusError("failed", "id is required");
+	if ((add.repo_url !== undefined) === (add.scratch === true)) throw new NexusError("failed", "provide exactly one of repo_url or scratch: true");
+	if (add.repo_url !== undefined && !add.repo_url.trim()) throw new NexusError("failed", "repo_url is required");
+	const node = add.node ?? (await listNodes(nexus, signal)).find((node) => node.state === "online")?.name;
+	if (node === undefined) throw new NexusError("failed", "no online node is available; provide node explicitly");
+	const flags = [`--node=${node}`, `--branch=${add.branch ?? "main"}`];
+	if (add.scratch === true) flags.push("--scratch");
+	for (const [key, flag] of [["cpus", "cpus"], ["memory_gib", "memory"], ["disk_gib", "disk"]] as const) {
+		if (add[key] !== undefined) flags.push(`--${flag}=${add[key]}`);
+	}
+	for (const host of add.allow_hosts ?? []) flags.push(`--allow-host=${host}`);
+	for (const login of add.logins ?? []) flags.push(`--login=${login}`);
+	// Never let model-supplied hosts or secret names change this credential grant.
+	if (add.github === true) flags.push("--secret=GH_TOKEN:api.github.com,github.com");
+	try {
+		return parse(Project, await nexus.run(["project add", ...flags, "--", add.id.trim(), ...(add.repo_url !== undefined ? [add.repo_url.trim()] : [])], signal), "nexus project add");
+	} catch (err) {
+		if (err instanceof NexusError && err.kind === "invalid" && /^Unknown option '--(?:scratch|secret)'(?:\.|$)/.test(err.message)) {
+			throw new NexusError("invalid", `${err.message}: adding a project with --scratch or --secret needs Nexus CLI 0.7.0 or later (nexus --version). Update the nexus CLI.`);
+		}
+		throw newer(err, "project add", "adding a project", "0.7.0", true);
+	}
+}
+
 /**
  * Opens a session in the pylon, which needs CLI 0.5.0: a Herdr workspace with the harness's agent in it, Claude Code
  * unless `harness` names another, titled with the harness's name unless `title` is given. A paused pylon is woken
@@ -270,10 +369,10 @@ export const isOlder = (version: readonly number[], than: readonly number[]) => 
 };
 
 /**
- * The CLI versions read that were new enough for what asked, by Nexus. Only those are kept, so a CLI updated after a
- * refusal is read again rather than refused from memory.
+ * The CLI versions found new enough for what asked, by Nexus. Only those are kept, so a CLI updated after a refusal is
+ * read again rather than refused from memory.
  */
-const versionsRead = new WeakMap<Nexus, Map<string, number[]>>();
+const versionsMet = new WeakMap<Nexus, Set<string>>();
 
 /**
  * Fails unless the CLI is `needed` or later, saying which version `doing` needs. A version that cannot be read
@@ -281,14 +380,14 @@ const versionsRead = new WeakMap<Nexus, Map<string, number[]>>();
  */
 async function requireVersion(nexus: Nexus, needed: readonly number[], doing: string, signal?: AbortSignal): Promise<void> {
 	const wanted = needed.join(".");
-	const known = versionsRead.get(nexus) ?? new Map<string, number[]>();
-	versionsRead.set(nexus, known);
-	if (known.has(wanted)) return;
+	const met = versionsMet.get(nexus) ?? new Set<string>();
+	versionsMet.set(nexus, met);
+	if (met.has(wanted)) return;
 	const printed = await nexus.version(signal);
 	const version = parseVersion(printed);
 	if (version === null) throw new NexusError("invalid", `${nexus.bin} --version printed no version (${JSON.stringify(printed.trim().slice(0, 80))}): ${doing} needs Nexus CLI ${wanted} or later`);
 	if (isOlder(version, needed)) throw new NexusError("invalid", `${nexus.bin} is ${version.join(".")}: ${doing} needs Nexus CLI ${wanted} or later (nexus --version)`);
-	known.set(wanted, version);
+	met.add(wanted);
 }
 
 /**
@@ -406,4 +505,69 @@ export async function waitThread(nexus: Nexus, thread: string, timeoutMs: number
 	// A watch that ended by itself ended on the thread's delete.
 	const settled = checked || (!cancelled && !timeout.aborted);
 	return { view, settled, timedOut: timeout.aborted && !settled, cancelled };
+}
+
+/** How often a wait reads a Claude worker thread, as the Claude Code Nexus mod does. */
+const claudeWaitMs = 2_000;
+
+export interface ClaudeThread {
+	detail: ThreadDetail;
+	conversation: ClaudeConversation;
+}
+
+/** A Claude worker thread's details and transcript, or undefined for a thread whose agent is Nexus's, which a watch reports. */
+export async function readClaudeThread(nexus: Nexus, thread: string, signal?: AbortSignal): Promise<ClaudeThread | undefined> {
+	const detail = await showThread(nexus, thread, signal);
+	if (detail.claudeWorker === undefined) return undefined;
+	return { detail, conversation: await readConversation(nexus, thread, signal) };
+}
+
+export interface ClaudeWaited {
+	last: ClaudeThread;
+	settled: boolean;
+	timedOut: boolean;
+	cancelled: boolean;
+	/** Why the last reading failed, while it fails: the wait goes on with the reading before. */
+	outage?: string;
+}
+
+/**
+ * Reads a Claude worker thread every `claudeWaitMs` until it is idle, the deadline `until` passes or `signal` aborts.
+ * A thread that cannot run on or a failed or stalled launch settles at once. A message just typed may not be in the transcript yet, nor its turn reported, so an idle reading
+ * settles only when the one before it was idle too, unless this wait saw the turn run; a deadline too near for that
+ * reading ends the wait unsettled, and so does one that passes during a reading, with the reading before. A cancel
+ * leaves it unsettled, since only two completed readings settle it. The rule is the Claude Code Nexus mod's.
+ */
+export async function waitClaude(nexus: Nexus, thread: string, first: ClaudeThread, until: number, signal?: AbortSignal): Promise<ClaudeWaited> {
+	let last = first;
+	let sawWorking = false;
+	let wasIdle = false;
+	let outage: string | undefined;
+	const end = (settled: boolean): ClaudeWaited => {
+		const cancelled = !settled && signal?.aborted === true;
+		return { last, settled, timedOut: !settled && !cancelled, cancelled, ...(outage ? { outage } : {}) };
+	};
+	for (;;) {
+		sawWorking ||= last.conversation.working;
+		if (outage === undefined && hasWorkerEnded(last.detail, last.conversation)) return end(true);
+		const idle = outage === undefined && isWorkerIdle(last.detail, last.conversation, sawWorking);
+		if (idle && (wasIdle || sawWorking)) return end(true);
+		if (signal?.aborted || Date.now() + claudeWaitMs > until) return end(false);
+		wasIdle = idle;
+		await sleep(claudeWaitMs, undefined, { signal }).catch(() => {});
+		if (signal?.aborted) return end(false);
+		const deadline = AbortSignal.timeout(Math.max(0, until - Date.now()));
+		let next: ClaudeThread | undefined;
+		try {
+			next = await readClaudeThread(nexus, thread, signal ? AbortSignal.any([signal, deadline]) : deadline);
+		} catch (err) {
+			if (signal?.aborted || deadline.aborted) return end(false);
+			if (!(err instanceof NexusError && (err.kind === "unreachable" || err.kind === "failed"))) throw err;
+			outage = err.message;
+			continue;
+		}
+		if (next === undefined) throw new NexusError("failed", `${thread} is no longer a Claude Code worker thread`);
+		last = next;
+		outage = undefined;
+	}
 }

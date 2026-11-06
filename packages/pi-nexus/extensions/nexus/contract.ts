@@ -15,7 +15,8 @@ const Nullable = <T extends TSchema>(schema: T) => Type.Union([schema, Type.Null
  */
 const Tagged = <T extends TSchema[]>(key: string, variants: [...T]) => Type.Union(variants, { discriminator: key });
 
-export const Base = Type.Object({ kind: Type.Union([Type.Literal("start"), Type.Literal("head")]), commit: Nullable(Type.String()) });
+/** What a checkout read compares with: the commit the pylon booted at, HEAD, or the snapshot before the latest agent reply. */
+export const Base = Type.Object({ kind: Type.Union([Type.Literal("start"), Type.Literal("head"), Type.Literal("turn")]), commit: Nullable(Type.String()) });
 export type Base = Static<typeof Base>;
 export const ChangedFile = Type.Object({
 	path: Type.String(), oldPath: Nullable(Type.String()),
@@ -31,8 +32,8 @@ export type Diff = Static<typeof Diff>;
 const ThreadStatus = Type.Union([Type.Literal("active"), Type.Literal("idle"), Type.Literal("archived"), Type.Literal("deleted")]);
 export type ThreadStatus = Static<typeof ThreadStatus>;
 
-/** What the planner wants of a thread's pylon. */
-const DesiredPhase = Type.Union([Type.Literal("running"), Type.Literal("paused"), Type.Literal("deleted")]);
+/** What the planner wants of a thread's pylon: `reading` while the usage backfill reads an archived thread's pylon (CLI 0.33.0). */
+const DesiredPhase = Type.Union([Type.Literal("running"), Type.Literal("paused"), Type.Literal("deleted"), Type.Literal("reading")]);
 export type DesiredPhase = Static<typeof DesiredPhase>;
 
 const threadFields = {
@@ -46,6 +47,25 @@ const threadFields = {
 	lastHumanActivityAt: Type.Number(),
 	/** Null until the thread's agent has a conversation. */
 	conversationId: Nullable(Type.String()),
+	/** Whether a session in the pylon, a Claude worker's included, runs a turn. Absent from a control plane that reports none. */
+	sessionTurnRunning: Type.Optional(Type.Boolean()),
+	/** The earliest known start of the running turns, absent while none runs or none was recorded starting. */
+	workingSince: Type.Optional(Type.Number()),
+	/** Whether a session in the pylon waits for input, such as at a permission prompt. */
+	sessionWaiting: Type.Optional(Type.Boolean()),
+	/** The caller's node ID, or `nexus-review`, `nexus-check` or `nexus-verify` for a thread the review loop started. */
+	startedBy: Type.Optional(Type.String()),
+};
+
+/**
+ * What the control plane says a thread wants of a person, shared by every client. `attention` stays a string, so a
+ * value added later reads as nothing to show rather than failing the whole list.
+ */
+const seenFields = {
+	seenAt: Nullable(Type.Number()),
+	/** When the latest agent turn ended. */
+	lastReplyAt: Nullable(Type.Number()),
+	attention: Nullable(Type.String()),
 };
 
 /** The reply of `start`, `archive`, `unarchive` and `delete`, and `thread` in a detail. */
@@ -55,6 +75,7 @@ export type Thread = Static<typeof Thread>;
 /** A row of `threads`: a thread with what the planner wants of its pylon and what its node last reported. */
 export const ThreadRow = Type.Object({
 	...threadFields,
+	...seenFields,
 	desired: DesiredPhase,
 	pylon: Type.Object({ node: Type.String(), actualState: Type.String(), failed: Nullable(Type.String()) }),
 });
@@ -128,9 +149,27 @@ export type OpenedSession = Static<typeof OpenedSession>;
 /** The reply of `session close`, which has nothing to report. */
 export const SessionClosed = Type.Null();
 
+/**
+ * A review loop of the thread's pull request. `phase.kind` stays a string, so a phase added later reads as one to name
+ * rather than failing the details; `needs-person` carries the reasons it ended for the person.
+ */
+const Review = Type.Object({
+	id: Type.String(),
+	reviewer: Type.String(),
+	models: Type.Object({ reviewer: Type.String() }),
+	maxRounds: Type.Number(),
+	rounds: Type.Array(Type.Unknown()),
+	land: Nullable(Type.Unknown()),
+	phase: Type.Object({ kind: Type.String(), reasons: Type.Optional(Type.Array(Type.String())) }),
+});
+export type Review = Static<typeof Review>;
+
 /** The reply of `show`. */
 export const ThreadDetail = Type.Object({
 	thread: Thread,
+	...seenFields,
+	/** Present for a thread whose worker is Claude Code, whose conversation `conversation` prints, never a watch. */
+	claudeWorker: Type.Optional(Type.Object({ model: Nullable(Type.String()), state: Type.String(), message: Type.Optional(Type.String()) })),
 	desired: DesiredPhase,
 	pylon: Type.Object({
 		id: Type.String(),
@@ -150,6 +189,13 @@ export const ThreadDetail = Type.Object({
 	attach: Type.String(),
 	/** Null for a thread with no conversation. */
 	agent: Nullable(Type.Object({ parkedTasks: Type.Number() })),
+	/** The thread's latest review as a builder, or null. Absent from a control plane older than CLI 0.18.0. */
+	review: Type.Optional(Nullable(Review)),
+	/**
+	 * Every question the thread asked, answered or not, a Claude worker's AskUserQuestion among them. Its `text` may
+	 * be several lines. Absent from a control plane older than CLI 0.35.0.
+	 */
+	questions: Type.Optional(Type.Array(Type.Object({ text: Type.String(), answerer: Type.String(), answer: Nullable(Type.Object({})) }))),
 });
 export type ThreadDetail = Static<typeof ThreadDetail>;
 
@@ -165,6 +211,67 @@ export function parseDetail(value: unknown, what: string): ThreadDetail {
 		}
 	}
 	return parse(ThreadDetail, value, what);
+}
+
+/** The reply of `send`: the submission a Nexus agent takes, or what Claude did with the message. */
+export const Sent = Type.Union([
+	Type.Object({ submission: Type.Number() }),
+	Type.Object({ claude: Type.Object({ session: Type.String(), outcome: Type.String(), resumed: Type.Boolean() }) }),
+]);
+export type Sent = Static<typeof Sent>;
+
+/** The reply of `seen`, which has nothing to report. */
+export const Seen = Type.Null();
+
+/** Each entry kind of a Claude worker's transcript that pi-nexus shows. */
+export const claudeEntries = {
+	/**
+	 * `from` is `person`, `command` for a slash command, or another source, such as a plugin. `images` places each image
+	 * of the prompt in the transcript (CLI 0.44.0), and its text no longer says `[image]`.
+	 */
+	prompt: Type.Object({ kind: Type.Literal("prompt"), at: Type.Number(), text: Type.String(), from: Type.String(), images: Type.Optional(Type.Array(Type.Unknown())) }),
+	reply: Type.Object({ kind: Type.Literal("reply"), text: Type.String() }),
+	tool: Type.Object({ kind: Type.Literal("tool"), id: Type.String(), name: Type.String(), input: Type.Record(Type.String(), Type.Unknown()) }),
+	result: Type.Object({ kind: Type.Literal("result"), toolUseId: Type.String(), output: Type.String(), isError: Type.Boolean() }),
+	/** A background subagent or shell finished. */
+	task: Type.Object({ kind: Type.Literal("task"), status: Type.String(), summary: Type.String(), result: Type.Optional(Nullable(Type.String())) }),
+	/** A prompt typed while Claude was busy joins its queue on `enqueue`, and leaves it on any other op. */
+	queue: Type.Object({ kind: Type.Literal("queue"), op: Type.String(), text: Nullable(Type.String()) }),
+	/** `tone` is `info` or `error`. */
+	notice: Type.Object({ kind: Type.Literal("notice"), tone: Type.String(), text: Type.String() }),
+	turn: Type.Object({ kind: Type.Literal("turn"), durationMs: Type.Number() }),
+	/** Claude Code writes a pull request's record again each time it saves the session, so only the first per `url` shows. */
+	"pull-request": Type.Object({ kind: Type.Literal("pull-request"), number: Type.Number(), url: Type.String() }),
+	/** A transcript record the control plane does not know, kept visible. */
+	record: Type.Object({ kind: Type.Literal("record"), type: Type.String(), summary: Type.String() }),
+};
+export type ClaudeEntry = { [K in keyof typeof claudeEntries]: Static<(typeof claudeEntries)[K]> }[keyof typeof claudeEntries];
+
+const ClaudeConversation = Type.Object({
+	kind: Type.Literal("claude"),
+	entries: Type.Array(Type.Unknown()),
+	/** How many older entries the control plane no longer keeps. */
+	dropped: Type.Number(),
+	/** When the transcript was last read from the pylon, or null if never. */
+	readAt: Nullable(Type.Number()),
+	/** Whether a turn of the worker's session runs. */
+	working: Type.Boolean(),
+});
+/** `ordinal` is the entry's place in the control plane's list, the unknown entries counted, so it stays put as they are dropped. */
+export type ClaudeConversation = Omit<Static<typeof ClaudeConversation>, "entries"> & { entries: (ClaudeEntry & { ordinal: number })[] };
+
+/**
+ * `conversation`'s reply for a Claude worker thread. The contract asks a consumer to ignore the entry kinds it does
+ * not know, so those are dropped, and each known one is checked against its shape.
+ */
+export function parseConversation(value: unknown, what: string): ClaudeConversation {
+	const conversation = parse(ClaudeConversation, value, what);
+	const entries = conversation.entries.flatMap((entry, i) => {
+		const kind = (entry as { kind?: unknown } | null)?.kind;
+		if (typeof kind !== "string" || !Object.hasOwn(claudeEntries, kind)) return [];
+		return [{ ...(parse(claudeEntries[kind as keyof typeof claudeEntries], entry, `${what}'s entry ${i}`) as ClaudeEntry), ordinal: i }];
+	});
+	return { ...conversation, entries };
 }
 
 /** A project as `projects` lists it and `project add` prints the one it added. */

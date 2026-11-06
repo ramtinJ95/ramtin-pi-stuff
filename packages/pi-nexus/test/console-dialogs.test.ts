@@ -6,7 +6,6 @@ import { StartFormView } from "../extensions/nexus/console/start-form.ts";
 import type { StartForm } from "../extensions/nexus/console/model.ts";
 import { asked, fakeTui, keybindings, piTheme, plain } from "./console-fixture.ts";
 import type { ThreadRow } from "../extensions/nexus/contract.ts";
-import type { Seen } from "../extensions/nexus/store.ts";
 import { NexusError } from "../extensions/nexus/thread.ts";
 import { idA, idB, idC, row } from "./fixtures.ts";
 
@@ -23,47 +22,59 @@ describe("picker", () => {
 		row(idC, { project: "nexus", title: "Old work", status: "archived", desired: "deleted", pylon: { node: "firebat", actualState: "absent", failed: null } }),
 	];
 
-	function open(width = 140, seen: Seen = { since: asked + 60_000, threads: {} }, list: ThreadRow[] = threads, parked = new Map<string, number>(), scope: string | null = null) {
+	function open(width = 140, list: ThreadRow[] = threads, scope: string | null = null) {
 		const ends: PickerEnd[] = [];
 		const picker = new Picker(fakeTui(), piTheme(), (end) => ends.push(end), () => asked + 60_000);
 		picker.focused = true;
-		picker.setThreads(list, projects, { seen, parked }, scope);
+		picker.setThreads(list, projects, scope);
 		const press = (...input: string[]) => input.forEach((k) => picker.handleInput(k));
 		return { picker, ends, text: () => plain(picker.render(width)), press };
 	}
 
-	test("shows each project's threads with the overview columns and the closed ones folded", () => {
+	test("shows each project's threads newest first, each a dot, its title and its age, with the closed ones folded", () => {
 		const out = open().text();
 		expect(out).toContain("Nexus threads");
 		expect(out).toContain("→ + New thread");
 		expect(out).toMatch(/▾ nexus  main\n/);
-		expect(out).toMatch(/● Fix the probe retry +agent working  wanted running  running  firebat  human never  agent turn running  1 min/);
-		// The columns line up across rows.
-		const [fix, docs] = out.split("\n").filter((l) => l.includes("●"));
-		for (const column of ["wanted", "firebat", "human never", "1 min"]) expect(docs!.indexOf(column)).toBe(fix!.indexOf(column));
-		expect(docs).toContain("wanted paused");
+		expect(out).toMatch(/\n   ◉ Fix the probe retry +working\n/);
+		expect(out).toMatch(/\n   ○ Docs pass +1 min\n/);
+		expect(out).not.toMatch(/wanted|firebat|human|agent turn/);
 		expect(out).toContain("▸ 1 archived");
 		expect(out).not.toContain("Old work");
 		expect(out).toMatch(/▾ site  trunk\n/);
 	});
 
-	test("different activity ages do not shift the overview columns", () => {
+	test("ages and words sit at the right edge, whatever the width, a new reply adds no word, and a narrow terminal cuts the title rather than them", () => {
 		const list = [
-			{ ...threads[0]!, createdAt: asked + 60_000 },
-			{ ...threads[1]!, createdAt: asked - 11 * 60_000 },
+			{ ...threads[0]!, title: "Fix the probe retry so that it backs off and gives up after a while", workingSince: asked - 11 * 60_000 },
+			{ ...threads[1]!, createdAt: asked - 11 * 60_000, attention: "reply" },
 		];
-		for (const width of [140, 110]) {
-			const [fix, docs] = open(width, undefined, list).text().split("\n").filter((l) => l.includes("●"));
-			expect(fix).toEndWith("now");
-			expect(docs).toEndWith("12 min");
+		for (const width of [140, 60, 40]) {
+			const [fix, docs] = open(width, list).text().split("\n").filter((l) => /[◉●○]/.test(l));
+			expect(fix).toEndWith("working 12 min");
+			expect(docs).toMatch(/Docs pass +12 min$/);
 			expect(fix!.length).toBe(width);
 			expect(docs!.length).toBe(width);
-			for (const column of ["wanted", "firebat", ...(width === 140 ? ["human never", "agent "] : [])]) expect(docs!.indexOf(column)).toBe(fix!.lastIndexOf(column));
 		}
+		expect(open(40, list).text()).toMatch(/◉ Fix the probe \S*\.\.\. +working 12 min\n/);
 	});
-	test("narrow terminals drop columns before they cut the title", () => {
-		expect(open(110).text()).toMatch(/● Fix the probe retry +agent working  wanted running  running  firebat  1 min\n/);
-		expect(open(50).text()).toMatch(/● Fix the probe retry +agent working {2}1 min\n/);
+
+	test("colour shows only where a thread asks something of you: a running pylon whose agent is idle is dim, not green, and a new reply only colours its dot", () => {
+		const t = piTheme();
+		const list = [
+			row(idA, { project: "nexus", title: "Idle on a running pylon", createdAt: asked }),
+			row(idB, { project: "nexus", title: "Unread", createdAt: asked - 1, attention: "reply" }),
+			row(idC, { project: "nexus", title: "Broken", createdAt: asked - 2, attention: "failed", pylon: { node: "firebat", actualState: "failed", failed: "boom" } }),
+		];
+		const lines = open(140, list).picker.render(140);
+		const line = (title: string) => lines.find((l) => l.includes(title))!;
+		expect(line("Idle on a running pylon")).toContain(t.fg("dim", "●"));
+		expect(lines.join("\n")).not.toContain(t.fg("success", "●"));
+		expect(line("Unread")).toContain(t.fg("accent", "●"));
+		expect(line("Unread")).toContain(t.fg("muted", "Unread"));
+		expect(lines.join("\n")).not.toContain("new reply");
+		expect(line("Broken")).toContain(t.fg("error", "✕"));
+		expect(line("Broken")).toContain(t.fg("error", "failed"));
 	});
 
 	test("Enter opens a thread or unfolds the closed ones", () => {
@@ -109,9 +120,9 @@ describe("picker", () => {
 	test("vim's keys move and open, q closes, and the arrows still work", () => {
 		const p = open();
 		p.press("j");
-		expect(p.text()).toMatch(/→ ● Fix the probe retry/);
+		expect(p.text()).toMatch(/→ ◉ Fix the probe retry/);
 		p.press("j", "k", keys.down, keys.up);
-		expect(p.text()).toMatch(/→ ● Fix the probe retry/);
+		expect(p.text()).toMatch(/→ ◉ Fix the probe retry/);
 		p.press("G");
 		expect(p.text()).toMatch(/→ ▸ 1 archived/);
 		p.press("g", "g");
@@ -143,7 +154,7 @@ describe("picker", () => {
 	test("s lists the keys too, and r reads the threads again", () => {
 		let reads = 0;
 		const picker = new Picker(fakeTui(), piTheme(), () => {}, () => asked + 60_000, undefined, () => reads++);
-		picker.setThreads(threads, projects, { seen: { since: 0, threads: {} }, parked: new Map() }, null);
+		picker.setThreads(threads, projects, null);
 		picker.handleInput("s");
 		expect(plain(picker.render(140))).toContain("read the threads again");
 		picker.handleInput("j");
@@ -161,46 +172,95 @@ describe("picker", () => {
 		]);
 	});
 
-	test("a failed pylon needs you, and an agent that answered since the last look is new", () => {
-		const failed = row(idB, { project: "nexus", title: "Docs pass", createdAt: asked - 1, pylon: { node: "firebat", actualState: "failed", failed: "git clone: denied" } });
-		const answered = row(idC, { project: "nexus", title: "Answered", createdAt: asked - 2, lastAgentActivityAt: asked + 30_000 });
-		const looked = row("th-00000000000d", { project: "nexus", title: "Looked at", createdAt: asked - 3, lastAgentActivityAt: asked + 30_000 });
-		const list = [threads[0]!, failed, answered, looked];
-		const out = open(140, { since: asked, threads: { "th-00000000000d": asked + 40_000 } }, list).text();
-		expect(out).toMatch(/● Docs pass needs you +failed/);
-		expect(out).toMatch(/● Answered new /);
-		expect(out).not.toMatch(/Looked at new/);
-		// A working agent is not done yet, so its thread is not new.
-		expect(out).not.toMatch(/Fix the probe retry new/);
-		// Nobody has looked since the store began, so an answer before then is not new.
-		expect(open(140, { since: asked + 31_000, threads: {} }, list).text()).not.toMatch(/Answered new/);
+	test("what needs you to act lists first, under Needs you, in the control plane's order with its words, and a new reply stays in its project with no word", () => {
+		const marked = (title: string, attention: string | null, extra: Partial<ThreadRow> = {}) =>
+			row(`th-0000000000${title.length.toString(16).padStart(2, "0")}`, { project: "nexus", title, createdAt: asked - title.length, attention, ...extra });
+		const list = [
+			threads[0]!,
+			marked("Waiting session", "waiting"),
+			marked("Failed pylon", "failed", { pylon: { node: "firebat", actualState: "failed", failed: "git clone: denied" } }),
+			marked("Parked tasks", "parked"),
+			marked("Out of usage", "limited"),
+			marked("A decision for me", "decision", { project: "site" }),
+			marked("Unseen reply", "reply"),
+			marked("Agent at work", "working"),
+			marked("From the future", "stalled"),
+			marked("Archived reply", "reply", { status: "archived" }),
+		];
+		const out = open(140, list).text();
+		const needs = out.slice(out.indexOf("Needs you 5"), out.indexOf("▾ nexus"));
+		expect(needs.split("\n").filter((l) => l.trim() !== "").slice(1).map((l) => l.trim().replace(/ {2,}/g, " | "))).toEqual([
+			"✕ nexus / Failed pylon | failed | 1 min",
+			"! site / A decision for me | needs your decision | 1 min",
+			"✕ nexus / Parked tasks | parked | 1 min",
+			"◷ nexus / Out of usage | usage limit | 1 min",
+			"◇ nexus / Waiting session | waiting for input | 1 min",
+		]);
+		const nexus = out.slice(out.indexOf("▾ nexus"));
+		expect(nexus).toMatch(/● Unseen reply +1 min\n/);
+		expect(nexus).toMatch(/◉ Agent at work +working\n/);
+		expect(nexus).toMatch(/● From the future +1 min\n/);
+		expect(nexus).not.toContain("Failed pylon");
+		expect(out).not.toContain("Archived reply");
 	});
 
-	test("a thread seen parked needs you until its agent does something after that", () => {
-		const parked = new Map([[idB, asked + 10_000]]);
-		const seen = { since: asked + 60_000, threads: {} };
-		const stuck = row(idB, { project: "nexus", title: "Docs pass", createdAt: asked - 1, lastAgentActivityAt: asked + 5_000 });
-		expect(open(140, seen, [threads[0]!, stuck], parked).text()).toMatch(/● Docs pass needs you /);
-		// Retried since: the agent worked after the thread was seen parked.
-		const retried = { ...stuck, lastAgentActivityAt: asked + 20_000 };
-		expect(open(140, seen, [threads[0]!, retried], parked).text()).not.toMatch(/Docs pass needs you/);
+	test("a thread quiet for over 8 hours, its pylon down and its agent idle, folds under its project, even with an unread reply", () => {
+		const hours = (h: number) => asked + 60_000 - h * 3_600_000;
+		const paused = { node: "firebat", actualState: "paused", failed: null };
+		const list = [
+			row(idA, { project: "nexus", title: "Asleep a day", createdAt: hours(24), desired: "paused", pylon: paused }),
+			row(idB, { project: "nexus", title: "Asleep with news", createdAt: hours(30), lastReplyAt: hours(9), attention: "reply", desired: "paused", pylon: paused }),
+			row(idC, { project: "nexus", title: "Paused an hour ago", createdAt: hours(1), desired: "paused", pylon: paused }),
+			row("th-0000000000a1", { project: "nexus", title: "Running all night", createdAt: hours(20) }),
+			row("th-0000000000a2", { project: "nexus", title: "Working all night", createdAt: hours(20), agentTurnRunning: true, pylon: paused }),
+		];
+		const p = open(140, list);
+		const out = p.text();
+		for (const title of ["Paused an hour ago", "Running all night", "Working all night"]) expect(out).toContain(title);
+		expect(out).toContain("▸ 2 quiet for over 8 hours");
+		expect(out).not.toContain("Asleep");
+		for (let i = 0; i < 4; i++) p.press("j");
+		p.press(keys.enter);
+		expect(p.text()).toContain("▾ 2 quiet for over 8 hours");
+		expect(p.text()).toMatch(/○ Asleep a day +24 h\n/);
+		expect(p.text()).toMatch(/○ Asleep with news +9 h\n/);
+	});
+
+	test("the selected row says where its pylon is and what is wanted of it, when you and the agent were last active, and its ID", () => {
+		const list = [
+			row(idA, { project: "nexus", title: "Pausing", createdAt: asked, lastHumanActivityAt: asked - 5 * 60_000, lastAgentActivityAt: asked, pylon: { node: "nuc", actualState: "running", failed: null }, desired: "paused" }),
+			row(idB, { project: "nexus", title: "Settled", createdAt: asked - 1 }),
+		];
+		const p = open(140, list);
+		p.press("j");
+		expect(p.text()).toMatch(new RegExp(`→ ● Pausing .*\\n {5}running on nuc · wants paused · you 6 min · agent 1 min · ${idA}\\n`));
+		p.press("j");
+		expect(p.text()).toMatch(new RegExp(`→ ● Settled .*\\n {5}running on firebat · you never · agent never · ${idB}\\n`));
+		expect(p.text()).not.toContain(idA);
+	});
+
+	test("the hints that fit show whole, and the key help always shows", () => {
+		const wide = open(140).text().split("\n").find((l) => l.includes("NORMAL"))!;
+		expect(wide.trim()).toBe("NORMAL  j/k navigate  enter open or unfold  n new thread  p project  f filter  q close  s keys");
+		const narrow = open(60).text().split("\n").find((l) => l.includes("NORMAL"))!;
+		expect(narrow.trim()).toBe("NORMAL  j/k navigate  enter open or unfold  s keys");
 	});
 
 	test("opens on the thread it is given, once the threads load", () => {
 		const ends: PickerEnd[] = [];
 		const picker = new Picker(fakeTui(), piTheme(), (end) => ends.push(end), () => asked + 60_000, idB);
-		picker.setThreads(threads, projects, { seen: { since: 0, threads: {} }, parked: new Map() }, null);
+		picker.setThreads(threads, projects, null);
 		picker.handleInput(keys.enter);
 		expect(ends).toEqual([{ kind: "open", thread: idB }]);
 	});
 
 	test("a project scope shows only that project's threads and names it in the header, and p asks for another", () => {
 		const list = [...threads, row("th-5173aaaabbbb", { project: "site", title: "Landing page" })];
-		const all = open(140, undefined, list).text();
+		const all = open(140, list).text();
 		expect(all).toContain("Nexus threads · All projects");
 		expect(all).toContain("Fix the probe retry");
 		expect(all).toContain("Landing page");
-		const site = open(140, undefined, list, undefined, "site");
+		const site = open(140, list, "site");
 		expect(site.text()).toContain("Nexus threads · site");
 		expect(site.text()).toContain("Landing page");
 		expect(site.text()).not.toContain("Fix the probe retry");

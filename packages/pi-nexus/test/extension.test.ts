@@ -51,8 +51,8 @@ const until = async (check: () => boolean) => {
 };
 
 describe("/nexus", () => {
-	test("registers the eight model tools and no delete or pylon retry", () => {
-		expect(load({}).tools.sort()).toEqual(["nexus_archive", "nexus_preview", "nexus_read", "nexus_send", "nexus_start", "nexus_threads", "nexus_unpublish", "nexus_wait"]);
+	test("registers the ten model tools and no delete or pylon retry", () => {
+		expect(load({}).tools.sort()).toEqual(["nexus_archive", "nexus_preview", "nexus_project_add", "nexus_projects", "nexus_read", "nexus_send", "nexus_start", "nexus_threads", "nexus_unpublish", "nexus_wait"]);
 	});
 
 	test("unpublish runs nexus unpreview and says so, and an older CLI says to update", async () => {
@@ -236,8 +236,61 @@ describe("/nexus", () => {
 		expect(n.widgets.get("nexus")).toBeUndefined();
 	});
 
+	describe("a Claude worker's thread", () => {
+		const claude = { ...detail, thread: { ...detail.thread, conversationId: null }, claudeWorker: { model: "claude-opus-5-5", state: "started" } };
+
+		test("send says what Claude did with the message and follows nothing, since a watch never sees Claude's reply", async () => {
+			const n = load({ responses: { threads, show: claude, send: { claude: { session: "5e55", outcome: "queued", resumed: true } } } });
+			await n.run(`send ${idA} also the docs`);
+			expect(n.notified).toContainEqual([`Queued for Claude in ${idA}, which takes it at its next step. Its session was resumed to take it. /nexus open ${idA} shows its transcript.`, "info"]);
+			const sent = load({ responses: { threads, send: { claude: { session: "5e55", outcome: "sent", resumed: false } } } });
+			await sent.run(`send ${idA} hi`);
+			expect(sent.notified).toContainEqual([`Sent to Claude in ${idA}. /nexus open ${idA} shows its transcript.`, "info"]);
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			for (const m of [n, sent]) {
+				expect(m.calls().some((c) => c[0] === "watch")).toBe(false);
+				expect(m.widgets.get("nexus")).toBeUndefined();
+			}
+		});
+
+		test("follow refuses, and says where the transcript shows", async () => {
+			const n = load({ responses: { threads, show: claude } });
+			await n.run(`follow ${idA}`);
+			expect(n.notified).toEqual([[`nexus: nexus watch does not stream a Claude worker's transcript, so ${idA} cannot be followed. /nexus open ${idA} shows it.`, "error"]]);
+			expect(n.calls().some((c) => c[0] === "watch")).toBe(false);
+		});
+
+		test("show puts each reason a review left to the person, and each question for them, before the transcript", async () => {
+			const review = { id: "rv-0a1b2c3d", reviewer: "th-0000000000ee", models: { reviewer: "gpt-6" }, maxRounds: 3, rounds: [], land: null, phase: { kind: "needs-person", reasons: ["The merge policy held the landing."] } };
+			const questions = [{ id: "qn-ask", thread: idA, text: "Which database?", answerer: "person", askedAt: 3, answer: null, ask: { questions: [] } }];
+			const conversation = { kind: "claude", entries: [{ kind: "reply", at: 4, text: "Fixed." }], dropped: 0, readAt: 6, working: false };
+			const n = load({ responses: { threads, show: { ...claude, attention: "decision", review, questions }, conversation }, watch: [{ event: reset(idA, []) }, { event: state(idA, idle) }], watchHold: true });
+			await n.run(`show ${idA}`);
+			expect(n.notes).toEqual([{ title: `${idA}: active, agent idle, pylon running`, body: "Needs you: The merge policy held the landing.\n\nNeeds you: Which database? (answer it on the dashboard)\n\nFixed." }]);
+		});
+
+		test("show notes Claude's transcript as the CLI renders it", async () => {
+			const conversation = {
+				kind: "claude",
+				entries: [
+					{ kind: "prompt", at: 1, text: "Fix the probe", from: "person" },
+					{ kind: "tool", at: 2, id: "toolu_1", name: "Bash", input: { command: "npm test" } },
+					{ kind: "result", at: 3, toolUseId: "toolu_1", output: "ok", isError: false },
+					{ kind: "reply", at: 4, text: "Fixed." },
+					{ kind: "turn", at: 5, durationMs: 12_400 },
+				],
+				dropped: 0,
+				readAt: 6,
+				working: false,
+			};
+			const n = load({ responses: { threads, show: claude, conversation }, watch: [{ event: reset(idA, []) }, { event: state(idA, idle) }], watchHold: true });
+			await n.run(`show ${idA}`);
+			expect(n.notes).toEqual([{ title: `${idA}: active, agent idle, pylon running`, body: '> Fix the probe\n\n[tool] Bash {"command":"npm test"} (ok)\nok\n\nFixed.\n\n[turn] 12s' }]);
+		});
+	});
+
 	test("a shutdown ends every watch and starts no more CLI runs", async () => {
-		const n = load({ responses: { threads }, watch: [{ event: reset(idA, []) }, { event: state(idA, idle) }], watchHold: true });
+		const n = load({ responses: { threads, show: detail }, watch: [{ event: reset(idA, []) }, { event: state(idA, idle) }], watchHold: true });
 		await n.run(`follow ${idA}`);
 		await until(() => n.calls().some((c) => c[0] === "watch"));
 		n.shutdown();
@@ -250,7 +303,7 @@ describe("/nexus", () => {
 	});
 
 	test("a shutdown ends a model's wait", async () => {
-		const n = load({ watch: [{ event: reset(idA, [user(1, "hi")]) }, { event: state(idA, working) }], watchHold: true });
+		const n = load({ responses: { show: detail }, watch: [{ event: reset(idA, [user(1, "hi")]) }, { event: state(idA, working) }], watchHold: true });
 		const wait = n.tool("nexus_wait", { thread: idA });
 		await until(() => n.calls().some((c) => c[0] === "watch"));
 		n.shutdown();
@@ -260,7 +313,7 @@ describe("/nexus", () => {
 	});
 
 	test("a follow restarted while the old watch is still exiting keeps running", async () => {
-		const n = load({ watch: [{ event: reset(idA, []) }, { event: state(idA, idle) }], watchHold: true, watchExitDelayMs: 500 });
+		const n = load({ responses: { show: detail }, watch: [{ event: reset(idA, []) }, { event: state(idA, idle) }], watchHold: true, watchExitDelayMs: 500 });
 		await n.run(`follow ${idA}`);
 		await until(() => n.calls().filter((c) => c[0] === "watch").length === 1);
 		await n.run(`unfollow ${idA}`);
@@ -275,6 +328,7 @@ describe("/nexus", () => {
 
 	test("the follow widget shows an outage until the next state", async () => {
 		const n = load({
+			responses: { show: detail },
 			watch: [
 				{ event: { type: "error", thread: idA, kind: "unreachable", message: "nothing listens on the SOCKS proxy localhost:1" } },
 				{ event: reset(idA, []), delayMs: 300 },
@@ -289,6 +343,7 @@ describe("/nexus", () => {
 
 	test("unfollow by prefix works while Nexus is down", async () => {
 		const n = load({
+			responses: { show: detail },
 			fail: { threads: { exit: 2, kind: "unreachable", error: "nothing listens on the SOCKS proxy" } },
 			watch: [{ event: reset(idA, []) }, { event: state(idA, idle) }],
 			watchHold: true,
@@ -302,7 +357,7 @@ describe("/nexus", () => {
 	});
 
 	test("unfollow of a thread not followed says so", async () => {
-		const n = load({ watch: [{ event: reset(idA, []) }, { event: state(idA, idle) }], watchHold: true });
+		const n = load({ responses: { show: detail }, watch: [{ event: reset(idA, []) }, { event: state(idA, idle) }], watchHold: true });
 		await n.run(`follow ${idA}`);
 		await n.run("unfollow ffff");
 		expect(n.notified).toContainEqual(["Not following that.", "info"]);

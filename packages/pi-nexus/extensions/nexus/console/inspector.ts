@@ -11,6 +11,7 @@ import {
 	attachCommand,
 	attachHint,
 	badge,
+	decisions,
 	desiredTone,
 	harnessLabel,
 	linkedPort,
@@ -65,13 +66,18 @@ export function detailLines(theme: Theme, detail: ThreadDetail | undefined, node
 	kv("Last seen", pylon.observedAt === null ? "never" : `${ago(Date.parse(pylon.observedAt), now)}${offline ? " (stale)" : ""}`);
 	kv("Human", ago(thread.lastHumanActivityAt, now));
 	kv("Agent", thread.agentTurnRunning ? "turn running" : ago(thread.lastAgentActivityAt, now));
-	lines.push(`   ${t.fg("dim", pylon.id)}`);
+	for (const reason of decisions(detail)) w.wrapped(`Needs you: ${reason}`, "error");
+	lines.push(`   ${t.fg("dim", `${thread.id} · ${pylon.id}`)}`);
 	if (pylon.failed !== null) w.wrapped(`The planner gave up: ${pylon.failed}`, "error");
 
 	const outputs = shownOutputs({ ...detail, previews: shown.previews });
 	w.heading("Outputs", outputs.length);
 	if (outputs.length === 0) lines.push(`   ${t.fg("dim", "No outputs yet.")}`);
 	for (const o of outputs) lines.push(`   ${t.fg("muted", o.kind.padEnd(8))} ${o.ref}`);
+	const review = detail.review;
+	if (review) {
+		w.wrapped(`Nexus review ${review.id}: ${review.phase.kind}, round ${review.rounds.length} of ${review.maxRounds}, by ${review.reviewer} on ${review.models.reviewer}${review.land === null ? "" : ", landing when approved"}`, "muted");
+	}
 
 	w.heading("Attach from a shell in the pylon");
 	lines.push(`   ${t.fg("mdCode", detail.attach)}`);

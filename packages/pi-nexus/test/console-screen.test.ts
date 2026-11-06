@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import type { Action } from "../extensions/nexus/commands.ts";
 import { ThreadScreen, type ScreenEnd } from "../extensions/nexus/console/thread-screen.ts";
-import type { OpenedSession, Preview, RenderedEntry, Session, ThreadDetail, ToolResultMessage } from "../extensions/nexus/contract.ts";
+import type { OpenedSession, Preview, RenderedEntry, Sent, Session, ThreadDetail, ToolResultMessage } from "../extensions/nexus/contract.ts";
 import { reduce, type ThreadView } from "../extensions/nexus/thread.ts";
-import { asked, detail, display, entries, ports, webPreview, fakeTui, keybindings, live, piTheme, plain, runningCall, working } from "./console-fixture.ts";
+import { asked, claudeConversation, claudeDetail, claudeIdle, detail, display, entries, ports, webPreview, fakeTui, keybindings, live, piTheme, plain, runningCall, working } from "./console-fixture.ts";
 import { idA, idle } from "./fixtures.ts";
 
 /** The note a second change of port 8080 gets while one runs, as every entry point says it. */
@@ -43,6 +44,7 @@ function open(
 		attachFails = undefined as Error | undefined,
 		closeFails = undefined as Error | undefined,
 		cli = "nexus",
+		reply = { submission: 1 } as Sent,
 	} = {},
 ) {
 	const sent: { text: string; steer: boolean; requestId: string }[] = [];
@@ -58,6 +60,7 @@ function open(
 	const ends: ScreenEnd[] = [];
 	let failures = sendFails;
 	let refreshes = 0;
+	const marks: number[] = [];
 	let rewatches = 0;
 	const tui = fakeTui(rows, 100);
 	let clock = asked + 72_000;
@@ -68,8 +71,8 @@ function open(
 		display: display(),
 		thread: idA,
 		cli,
-		checkout: { uncommitted: false, actions: {
-			changes: async (head) => ({ base: { kind: head ? "head" : "start", commit: null }, files: [], truncated: false }),
+		checkout: { base: "start", actions: {
+			changes: async (base) => ({ base: { kind: base, commit: null }, files: [], truncated: false }),
 			diff: async () => ({ base: { kind: "start", commit: null }, diff: "", truncated: false }),
 			persist() {},
 		} },
@@ -79,9 +82,13 @@ function open(
 			async send(text, steer, requestId) {
 				sent.push({ text, steer, requestId });
 				if (failures-- > 0) throw new Error("Nexus is unreachable");
+				return reply;
 			},
 			async act(action) {
 				acted.push(action);
+			},
+			shown(reply) {
+				marks.push(reply);
 			},
 			async preview(port) {
 				previewed.push(port);
@@ -145,8 +152,87 @@ function open(
 	const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 	/** Details as the console reads them, asked for now or at the earlier mark `askedAt`. */
 	const details = (d: ThreadDetail, askedAt = screen.mark()) => screen.setDetail(d, askedAt);
-	return { tick: (ms: number) => (clock += ms), screen, tui, sent, acted, previewed, unpublished, copied, sessionsOpened, sessionsClosed, attaches: () => attaches, ends, text, mode, type, normal, settle, details, refreshes: () => refreshes, rewatches: () => rewatches, release: () => release(), press: (...input: string[]) => input.forEach((k) => screen.handleInput(k)) };
+	return { tick: (ms: number) => (clock += ms), screen, tui, marks, sent, acted, previewed, unpublished, copied, sessionsOpened, sessionsClosed, attaches: () => attaches, ends, text, mode, type, normal, settle, details, refreshes: () => refreshes, rewatches: () => rewatches, release: () => release(), press: (...input: string[]) => input.forEach((k) => screen.handleInput(k)) };
 }
+
+describe("a Claude worker's thread", () => {
+	const claude = (reply?: Sent) => {
+		const s = open({ entries: [], state: claudeIdle }, { shown: claudeDetail, ...(reply === undefined ? {} : { reply }) });
+		s.screen.setConversation(claudeConversation, claudeDetail.lastReplyAt);
+		return s;
+	};
+
+	test("draws Claude's transcript, its work and its queue, and names its model", () => {
+		const s = claude();
+		const out = s.text();
+		expect(out).toContain("Fix the retry in probe.ts so it backs off.");
+		expect(out).toContain("I'll read the probe first.");
+		expect(out).toMatch(/Read\s+\{\s+"file_path": "\/home\/user\/workspace\/repo\/src\/probe.ts"/);
+		expect(out).toContain("export async function probe(url: string) {");
+		expect(out).toMatch(/Bash\s+\{\s+"command": "npm test"/);
+		expect(out).toContain("Background task completed: the test watcher stopped");
+		expect(out).toContain("The model request was interrupted.");
+		expect(out).toContain("Queued: also update the docs");
+		expect(out).toMatch(/Claude fixes the probe +● agent working\n/);
+		expect(out).toMatch(/Working · 1m 12s · 2 tools this turn/);
+		expect(plain(s.screen.render(140))).toMatch(/1 output +Claude Code · claude-opus-5-5\n/);
+		expect(out).not.toContain("This thread has no agent conversation.");
+	});
+
+	test("an idle Claude shows no run, and a transcript with nothing in it says why", () => {
+		const s = claude();
+		s.screen.setConversation({ ...claudeConversation, working: false }, claudeDetail.lastReplyAt);
+		expect(s.text()).not.toContain("Working ·");
+		expect(s.text()).toMatch(/Claude fixes the probe +● running\n/);
+		s.screen.setConversation({ ...claudeConversation, entries: [], readAt: null, working: false }, claudeDetail.lastReplyAt);
+		expect(s.text()).toContain("Claude's transcript has not been read yet. It is read while the pylon runs.");
+		s.screen.setConversation({ ...claudeConversation, entries: [], readAt: asked, working: false }, claudeDetail.lastReplyAt);
+		expect(s.text()).toContain("Claude has not written a transcript yet.");
+		s.screen.setConversation({ ...claudeConversation, dropped: 40 }, claudeDetail.lastReplyAt);
+		expect(s.text()).toContain("40 older entries are not kept.");
+	});
+
+	test("the composer sends to Claude and says when Claude queued the message", async () => {
+		const s = claude({ claude: { session: "5e55", outcome: "queued", resumed: true } });
+		await s.type("and the changelog");
+		expect(s.sent.map((m) => m.text)).toEqual(["and the changelog"]);
+		expect(s.text()).toContain("Queued for Claude, which takes it at its next step. Its session was resumed to take it.");
+		const idle = claude({ claude: { session: "5e55", outcome: "sent", resumed: false } });
+		await idle.type("/steer look at the docs too");
+		expect(idle.sent.map((m) => m.text)).toEqual(["look at the docs too"]);
+		expect(idle.text()).toContain("Sent to Claude.");
+	});
+
+	test("a prompt's images show as one [image] line each, as nexus conversation prints them", () => {
+		const s = claude();
+		const image = { offset: 0, bytes: 10, sha256: "ab", index: 0 };
+		const prompts = [
+			{ kind: "prompt" as const, at: asked, text: "Why does the header wrap?", from: "person", images: [image, { ...image, index: 1 }], ordinal: 0 },
+			{ kind: "prompt" as const, at: asked, text: "", from: "person", images: [image], ordinal: 1 },
+		];
+		s.screen.setConversation({ ...claudeConversation, working: false, entries: prompts }, claudeDetail.lastReplyAt);
+		expect(s.text()).toMatch(/Why does the header wrap\?\s*\n\s*\[image\]\s*\n\s*\[image\]/);
+		expect(s.text().match(/\[image\]/g)).toHaveLength(3);
+	});
+
+	test("the actions interrupt Claude's turn while it works, and leave out the harness's retry", async () => {
+		const s = claude();
+		s.normal("m");
+		const out = s.text();
+		expect(out).toMatch(/→ Interrupt Claude's turn/);
+		expect(out).toContain("Archive");
+		expect(out).not.toContain("Abort the run");
+		expect(out).not.toContain("Retry the parked tasks");
+		s.press(keys.enter);
+		await s.settle();
+		expect(s.acted).toEqual(["abort"]);
+		expect(s.text()).toContain("Interrupted Claude's turn.");
+		const idle = claude();
+		idle.screen.setConversation({ ...claudeConversation, working: false }, claudeDetail.lastReplyAt);
+		idle.normal("m");
+		expect(idle.text()).not.toContain("Interrupt Claude's turn");
+	});
+});
 
 describe("thread view", () => {
 	test("draws the conversation with pi's components, the run in the editor's border and the footer", () => {
@@ -166,8 +252,8 @@ describe("thread view", () => {
 		expect(out).toContain("✓ backs off");
 		expect(out).toContain("Queued: also update the docs");
 		expect(out).toMatch(/── \S Working · 1m 12s · 4 tools this turn · new messages queue ─+/);
-		expect(out).toContain("nexus / Fix the probe retry ● agent working (th-0123456789ab)");
-		expect(out).toMatch(/pylon running on firebat · seen 1 min ago · wanted running · 1 preview · 1 output +demo-model/);
+		expect(out).toMatch(/^ nexus \/ Fix the probe retry +● agent working\n/);
+		expect(out).toMatch(/pylon running on firebat · seen 1 min ago · 1 output +demo-model/);
 	});
 
 	test("a call whose result goes away is drawn afresh, without its old result or output", () => {
@@ -191,20 +277,46 @@ describe("thread view", () => {
 		expect(out).toMatch(/\+\s+await sleep\(backoff\(attempt\)\);/);
 	});
 
+	test("the title bar keeps the thread's state on the right as its title gives way, and Pylon has the ID", () => {
+		const s = open();
+		const bar = (width: number) => plain([s.screen.render(width)[0]!]);
+		expect(bar(100)).not.toContain(idA);
+		expect(bar(40)).toBe(" nexus / Fix the prob…  ● agent working");
+		expect(bar(24)).toMatch(/^ \S+…  ● agent working$/);
+		s.normal("4");
+		expect(s.text()).toContain(`${idA} · py-0123`);
+	});
+
+	test("the tab row and the mode line stay on one row, dropping the tabs' keys and whole hints, never the key help", () => {
+		const s = open();
+		const lines = (width: number) => plain(s.screen.render(width)).trimEnd().split("\n");
+		expect(lines(60)[1]).toBe(" 1 Conversation   2 Changes   3 Previews 1   4 Pylon");
+		expect(lines(48)[1]).toBe(" Conversation  Changes  Previews 1  Pylon");
+		expect(lines(60).at(-1)).toBe("NORMAL  i write  j/k scroll  d/u half page  s keys");
+		expect(lines(30).at(-1)).toBe("NORMAL  i write  s keys");
+		for (const width of [30, 48, 60, 100]) for (const line of s.screen.render(width)) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+	});
+
+	test("the footer says what is wanted of the pylon only while it is not there yet", () => {
+		const s = open({ entries, state: { ...idle, pylon: "running" } }, { shown: { ...detail, desired: "paused" } });
+		expect(s.text()).toMatch(/pylon running on firebat · seen 1 min ago · wants paused · 1 output/);
+		expect(open().text()).not.toContain("wants");
+	});
+
 	test("the hint line under the footer names the mode and the keys that work there, in pi's hint style", () => {
 		const s = open();
 		const hints = () => s.text().trimEnd().split("\n").at(-1)!;
-		expect(s.text()).toMatch(/demo-model\nNORMAL {2}i write {2}j\/k scroll {2}d\/u half page {2}h\/l views {2}m actions {2}s keys {2}q close/);
+		expect(s.text()).toMatch(/demo-model\nNORMAL {2}i write {2}j\/k scroll {2}d\/u half page {2}h\/l views {2}m actions {2}q close {2}s keys\n/);
 		// pi's hint colours: the key dim, what it does muted.
 		const t = piTheme();
 		expect(s.screen.render(100).join("\n")).toContain(`${t.fg("dim", "i")}${t.fg("muted", " write")}`);
 		s.normal("3");
 		expect(hints()).toMatch(/^NORMAL {2}i write {2}j\/k select {2}enter publish {2}x unpublish {2}y copy {2}h\/l views/);
 		s.press("i");
-		expect(hints()).toBe("INSERT  esc normal mode  enter send  / commands  pgup/pgdn scroll  ctrl+o expand tools");
+		expect(hints()).toBe("INSERT  enter send  / commands  pgup/pgdn scroll  ctrl+o expand tools  esc normal mode");
 		s.press(":");
 		expect(s.sent).toEqual([]);
-		expect(hints()).toBe("INSERT  esc normal mode  enter send  / commands  pgup/pgdn scroll  ctrl+o expand tools");
+		expect(hints()).toBe("INSERT  enter send  / commands  pgup/pgdn scroll  ctrl+o expand tools  esc normal mode");
 	});
 
 	test("the view opens in normal mode, where letters move it; i or a writes, Esc stops, and only insert mode shows the cursor", async () => {
@@ -296,7 +408,7 @@ describe("thread view", () => {
 		expect(lines).toHaveLength(12);
 		const out = plain(lines);
 		expect(out).toContain("Working ·");
-		expect(out).toContain("nexus / Fix the probe retry ● agent working (th-0123456789ab)");
+		expect(out).toMatch(/^ nexus \/ Fix the probe retry +● agent working\n/);
 		expect(out).toContain("Nexus is unreachable: no proxy. Still watching.");
 		const tall = open({ entries, state: working, live: { ...live, queued } }).text();
 		expect(tall).toContain("Queued: follow-up 2");
@@ -901,7 +1013,7 @@ describe("thread view", () => {
 		expect(s.text()).not.toContain("port-8080");
 		expect(s.text()).toMatch(/Ports 1\n +● 8080  no preview yet\. \/open 8080 publishes one/);
 		expect(s.text()).toContain("Port 8080 is unpublished. /open 8080 publishes it again, maybe at a new URL.");
-		expect(s.text()).toMatch(/· 1 preview ·/);
+		expect(s.text()).toContain("3 Previews 1");
 	});
 
 	test("an unpublished port stays under Ports until details asked for after it, whatever an older read or a failed /open says", async () => {
@@ -1016,6 +1128,15 @@ describe("thread view", () => {
 		expect(out).toContain("git clone: permission denied");
 		await failed.type("hi");
 		expect(failed.sent).toEqual([]);
+	});
+
+	test("a failed pylon's controller log shows under Pylon, and only its first line by the composer", () => {
+		const log = "git clone: permission denied\n  controller: clone exited 128\n  controller: giving up after 3 tries";
+		const s = open({ entries }, { shown: { ...detail, pylon: { ...detail.pylon, actualState: "failed", failed: log } } });
+		expect(s.text()).toContain("git clone: permission denied");
+		expect(s.text()).not.toContain("controller:");
+		s.normal("4");
+		expect(s.text()).toContain("controller: giving up after 3 tries");
 	});
 
 	test("a parked run says how to retry it, and a paused pylon that a message wakes it", () => {

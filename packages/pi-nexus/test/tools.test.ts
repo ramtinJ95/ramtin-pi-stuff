@@ -1,13 +1,17 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { createNexus } from "../extensions/nexus/cli.ts";
+import { Value } from "typebox/value";
+import { createNexus, waitClaude, type Nexus } from "../extensions/nexus/cli.ts";
+import { parseConversation } from "../extensions/nexus/contract.ts";
 import { nexusTools } from "../extensions/nexus/tools.ts";
+import { claudeDetail, detail } from "./console-fixture.ts";
 import { assistant, entry, fakeNexus, head, idA, idB, idle, reset, row, state, thread, threads, toolCall, toolResult, user, working, type Scenario } from "./fixtures.ts";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => cleanups.splice(0).forEach((cleanup) => cleanup()));
 
+/** `nexus_read` and `nexus_wait` ask `show` whether the thread's worker is Claude Code; unless told, it is Nexus's agent. */
 function setup(scenario: Scenario) {
-	const fake = fakeNexus(scenario);
+	const fake = fakeNexus({ ...scenario, responses: { show: detail, ...scenario.responses } });
 	cleanups.push(fake.cleanup);
 	const tools = Object.fromEntries(nexusTools(createNexus(fake.bin)).map((t) => [t.name, t]));
 	const call = async (name: string, params: Record<string, unknown>, signal?: AbortSignal) => {
@@ -28,7 +32,75 @@ async function failure(promise: Promise<unknown>): Promise<string> {
 
 describe("model tools", () => {
 	test("the model gets no delete or retry", () => {
-		expect(setup({}).names.sort()).toEqual(["nexus_archive", "nexus_preview", "nexus_read", "nexus_send", "nexus_start", "nexus_threads", "nexus_unpublish", "nexus_wait"]);
+		expect(setup({}).names.sort()).toEqual(["nexus_archive", "nexus_preview", "nexus_project_add", "nexus_projects", "nexus_read", "nexus_send", "nexus_start", "nexus_threads", "nexus_unpublish", "nexus_wait"]);
+	});
+
+	test("projects returns the CLI projects, including scratch and extra Project fields", async () => {
+		const projects = [{ id: "empty", repoUrl: null, defaultNode: "lab", defaultBranch: "main", resources: { cpus: 2, memoryGiB: 4, diskGiB: 10 } }];
+		const { call, calls } = setup({ responses: { projects } });
+		expect(await call("nexus_projects", {})).toEqual(projects);
+		expect(calls()).toEqual([["projects", "--json"]]);
+	});
+
+	test("project add defaults to the first online node and main, returning Project JSON", async () => {
+		const project = { id: "empty", repoUrl: null, defaultNode: "first", defaultBranch: "main" };
+		const { call, calls } = setup({ responses: { nodes: [{ name: "off", state: "offline" }, { name: "first", state: "online" }, { name: "second", state: "online" }], project: project } });
+		expect(await call("nexus_project_add", { id: "empty", scratch: true })).toEqual(project);
+		expect(calls()).toEqual([["nodes", "--json"], ["project", "add", "--json", "--node=first", "--branch=main", "--scratch", "--", "empty"]]);
+	});
+
+	test("project add passes options as values and grants only GitHub's fixed secret hosts", async () => {
+		const project = { id: "repo", repoUrl: "https://github.com/a/b", defaultNode: "lab", defaultBranch: "dev" };
+		const { call, calls } = setup({ responses: { project: project } });
+		expect(await call("nexus_project_add", { id: "--secret=EVIL:evil.example", repo_url: "--secret=GH_TOKEN:evil.example", node: "--scratch", branch: "--secret=EVIL:evil.example", cpus: 4, memory_gib: 8, disk_gib: 20, allow_hosts: ["evil.example", "--secret=GH_TOKEN:evil.example"], logins: ["claude", "chatgpt"], github: true })).toEqual(project);
+		expect(calls()).toEqual([["project", "add", "--json", "--node=--scratch", "--branch=--secret=EVIL:evil.example", "--cpus=4", "--memory=8", "--disk=20", "--allow-host=evil.example", "--allow-host=--secret=GH_TOKEN:evil.example", "--login=claude", "--login=chatgpt", "--secret=GH_TOKEN:api.github.com,github.com", "--", "--secret=EVIL:evil.example", "--secret=GH_TOKEN:evil.example"]]);
+	});
+
+	test("project add refuses ambiguous or missing sources before running the CLI", async () => {
+		for (const params of [{}, { scratch: false }, { repo_url: "url", scratch: true }, { repo_url: " " }]) {
+			const { call, calls } = setup({});
+			expect(await failure(call("nexus_project_add", { id: "repo", ...params }))).toMatch(/exactly one|repo_url is required/);
+			expect(calls()).toEqual([]);
+		}
+		const { call, calls } = setup({ responses: { nodes: [{ name: "off", state: "offline" }] } });
+		expect(await failure(call("nexus_project_add", { id: "repo", repo_url: "url" }))).toContain("no online node");
+		expect(calls()).toEqual([["nodes", "--json"]]);
+	});
+
+	test("project add preserves CLI refusal messages and omits the GitHub grant when false", async () => {
+		const { call, calls } = setup({ fail: { project: { exit: 5, kind: "conflict", error: "project repo already exists" } } });
+		expect(await failure(call("nexus_project_add", { id: "repo", repo_url: "url", scratch: false, node: "lab", github: false }))).toBe("nexus (conflict): project repo already exists");
+		expect(calls()).toEqual([["project", "add", "--json", "--node=lab", "--branch=main", "--", "repo", "url"]]);
+	});
+
+	test("project add names CLI 0.7.0 when the command is missing", async () => {
+		const { call } = setup({ fail: { project: { exit: 64, kind: "invalid", error: "unknown command project" } } });
+		expect(await failure(call("nexus_project_add", { id: "repo", scratch: true, node: "lab" }))).toBe("nexus (invalid): nexus has no project add command: adding a project needs Nexus CLI 0.7.0 or later (nexus --version). Update the nexus CLI.");
+	});
+
+	for (const flag of ["scratch", "secret"]) {
+		test(`project add names CLI 0.7.0 when --${flag} is unknown`, async () => {
+			const error = `Unknown option '--${flag}'. To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- "--${flag}"`;
+			for (const message of [`Unknown option '--${flag}'`, error]) {
+				const { call } = setup({ fail: { project: { exit: 64, kind: "invalid", error: message } } });
+				const source = flag === "scratch" ? { scratch: true } : { repo_url: "url", github: true };
+				expect(await failure(call("nexus_project_add", { id: "repo", node: "lab", ...source }))).toBe(`nexus (invalid): ${message}: adding a project with --scratch or --secret needs Nexus CLI 0.7.0 or later (nexus --version). Update the nexus CLI.`);
+			}
+		});
+	}
+
+	test("project add preserves unrelated option errors and secret refusals", async () => {
+		for (const error of ["Unknown option '--other'", "Unknown option '--secret-host'", "--secret takes NAME:HOST[,HOST...]"]) {
+			const { call } = setup({ fail: { project: { exit: 64, kind: "invalid", error } } });
+			expect(await failure(call("nexus_project_add", { id: "repo", node: "lab", scratch: true, github: true }))).toBe(`nexus (invalid): ${error}`);
+		}
+	});
+
+	test("project schemas reject extra secrets, secret hosts and invalid logins", () => {
+		const schema = nexusTools(createNexus()).find((tool) => tool.name === "nexus_project_add")!.parameters;
+		for (const extra of [{ secret: "GH_TOKEN:evil.example" }, { secrets: ["EVIL:evil.example"] }, { secret_hosts: ["evil.example"] }, { logins: ["other"] }]) {
+			expect(Value.Check(schema, { id: "repo", scratch: true, ...extra })).toBe(false);
+		}
 	});
 
 	test("nexus_threads lists threads of a project", async () => {
@@ -40,10 +112,35 @@ describe("model tools", () => {
 		expect(calls()).toEqual([["threads", "--json", "--project=acme"]]);
 	});
 
+	test("nexus_threads counts a Claude worker's session turn as working", async () => {
+		const { call } = setup({ responses: { threads: [row(idA, { sessionTurnRunning: true })] } });
+		expect(await call("nexus_threads", {})).toMatchObject([{ id: idA, working: true }]);
+	});
+
 	test("nexus_start passes the message and title through and returns the thread", async () => {
 		const { call, calls } = setup({ responses: { start: thread(idA, { title: "Fix it" }) } });
 		expect(await call("nexus_start", { project: "acme", message: "--fix the\nbug", title: "Fix it" })).toEqual({ id: idA, project: "acme", title: "Fix it" });
 		expect(calls()).toEqual([["start", "--json", "--project=acme", "--message=--fix the\nbug", "--title=Fix it"]]);
+	});
+
+	test("nexus_start starts a Claude Code worker with its model on a node", async () => {
+		const { call, calls } = setup({ responses: { start: thread(idA, { title: "Fix it", conversationId: null }) } });
+		expect(await call("nexus_start", { project: "acme", message: "--fix it", claude: true, model: "claude-sonnet-5-5", node: "lab" })).toEqual({ id: idA, project: "acme", title: "Fix it" });
+		expect(calls()).toEqual([["--version"], ["start", "--json", "--project=acme", "--claude=--fix it", "--model=claude-sonnet-5-5", "--node=lab"]]);
+	});
+
+	test("nexus_start refuses a model without claude, and names the CLI a model needs", async () => {
+		const { call, calls } = setup({});
+		expect(await failure(call("nexus_start", { project: "acme", message: "fix it", model: "claude-sonnet-5-5" }))).toBe("model needs claude: true");
+		expect(calls()).toEqual([]);
+		const old = setup({ version: "0.15.0" });
+		expect(await failure(old.call("nexus_start", { project: "acme", message: "fix it", claude: true, model: "claude-sonnet-5-5" }))).toContain("choosing a Claude Code worker's model needs Nexus CLI 0.16.0 or later");
+		expect(old.calls()).toEqual([["--version"]]);
+	});
+
+	test("nexus_send says what Claude did with a message typed into its session", async () => {
+		const { call } = setup({ responses: { send: { claude: { session: "5e55", outcome: "queued", resumed: true } } } });
+		expect(await call("nexus_send", { thread: idA, text: "also the docs" })).toEqual({ thread: idA, sent: true, claude: { outcome: "queued", resumed: true } });
 	});
 
 	test("nexus_send resolves a prefix and sends the text after --", async () => {
@@ -96,7 +193,7 @@ describe("model tools", () => {
 			],
 			conversation: "> fix the bug\n\nFixed it.",
 		});
-		expect(calls()[0]).toEqual(["watch", idA, "--json"]);
+		expect(calls().slice(0, 2)).toEqual([["show", "--json", idA], ["watch", idA, "--json"]]);
 	});
 
 	test("nexus_read says when the ports are unknown", async () => {
@@ -360,5 +457,141 @@ describe("model tools", () => {
 		const tools = nexusTools(createNexus("/nonexistent/nexus"));
 		const threadsTool = tools.find((t) => t.name === "nexus_threads")!;
 		expect(await failure(threadsTool.execute("call-1", {}, undefined, undefined, {} as never))).toContain("NEXUS_BIN");
+	});
+
+	describe("a Claude Code worker thread", () => {
+		const conversation = (working: boolean, entries: unknown[]) => ({ kind: "claude", entries, dropped: 0, readAt: 9, working });
+		const asked = { kind: "prompt", at: 1, text: "Fix the probe", from: "person" };
+		const pr = { kind: "pull-request", at: 4, number: 12, url: "https://github.com/acme/probe/pull/12", repository: "acme/probe" };
+		const answered = [asked, { kind: "reply", at: 2, text: "Reading it." }, { kind: "prompt", at: 3, text: "A hook ran", from: "other" }, pr, { kind: "reply", at: 5, text: "Fixed." }, pr];
+
+		test("nexus_read gives its state, its launch and its transcript, without a watch", async () => {
+			const { call, calls } = setup({ responses: { show: { ...claudeDetail, claudeWorker: { model: "claude-opus-5-5", state: "started" } }, conversation: conversation(true, answered) } });
+			expect(await call("nexus_read", { thread: idA })).toEqual({
+				thread: idA,
+				status: "active",
+				run: "working",
+				pylon: "running",
+				queued: 0,
+				ports: [{ port: 5173, service: "web", url: detail.previews[0]!.url, ready: true }, { port: 8080 }],
+				worker: { state: "started", model: "claude-opus-5-5" },
+				conversation: `> Fix the probe\n\nReading it.\n\n> [Claude Code] A hook ran\n\n[pull request] Opened pull request #12: ${pr.url}\n\nFixed.\n\n(Claude is working)`,
+			});
+			expect(calls().map((c) => c[0])).toEqual(["show", "--version", "conversation"]);
+		});
+
+		test("nexus_wait settles once the turn it saw running ends, with Claude's replies since the person's prompt", async () => {
+			const { call, calls } = setup({ responses: { show: claudeDetail, conversation: conversation(true, [asked]) }, after: { conversation: { conversation: conversation(false, answered) } } });
+			expect(await call("nexus_wait", { thread: idA })).toEqual({
+				thread: idA,
+				settled: true,
+				status: "active",
+				run: "idle",
+				pylon: "running",
+				queued: 0,
+				ports: [{ port: 5173, service: "web", url: detail.previews[0]!.url, ready: true }, { port: 8080 }],
+				worker: { state: "started", model: "claude-opus-5-5" },
+				reply: "Reading it.\n\nFixed.",
+			});
+			expect(calls().filter((c) => c[0] === "conversation")).toHaveLength(2);
+		});
+
+		test("nexus_wait settles an idle worker only on a second idle reading", async () => {
+			const { call, calls } = setup({ responses: { show: claudeDetail, conversation: conversation(false, [asked]) } });
+			expect(await call("nexus_wait", { thread: idA })).toMatchObject({ settled: true, reply: null });
+			expect(calls().filter((c) => c[0] === "conversation")).toHaveLength(2);
+		});
+
+		test("nexus_wait settles at once on a failed launch, with its diagnostic, and on a thread that cannot run on", async () => {
+			const stalled = { ...claudeDetail, claudeWorker: { model: null, state: "stalled", message: "pane: claude: command not found" } };
+			const archived = { ...claudeDetail, thread: { ...claudeDetail.thread, status: "archived" }, claudeWorker: { model: null, state: "starting" } };
+			for (const [show, worker] of [[stalled, { state: "stalled", model: null, message: "pane: claude: command not found" }], [archived, { state: "starting", model: null }]] as const) {
+				const { call, calls } = setup({ responses: { show, conversation: conversation(false, []) } });
+				expect(await call("nexus_wait", { thread: idA })).toMatchObject({ settled: true, worker, reply: null });
+				expect(calls().filter((c) => c[0] === "conversation")).toHaveLength(1);
+			}
+		});
+
+		test("a started worker with only a notice is still launching, but one this wait saw work settles with no transcript", async () => {
+			const notice = { kind: "notice", at: 1, tone: "info", text: "Claude Code started" };
+			const quiet = setup({ responses: { show: claudeDetail, conversation: conversation(false, [notice]) } });
+			expect(await quiet.call("nexus_wait", { thread: idA, timeout_seconds: 3 })).toMatchObject({ settled: false, timed_out: true });
+			const worked = setup({ responses: { show: claudeDetail, conversation: conversation(true, []) }, after: { conversation: { conversation: conversation(false, []) } } });
+			expect(await worked.call("nexus_wait", { thread: idA })).toMatchObject({ settled: true, reply: null });
+		});
+
+		test("nexus_wait whose first reading outlives the timeout or a cancel gives only that", async () => {
+			const timed = setup({ responses: { show: claudeDetail }, delayMs: { show: 1_500 } });
+			const started = Date.now();
+			expect(await timed.call("nexus_wait", { thread: idA, timeout_seconds: 1 })).toEqual({ thread: idA, settled: false, timed_out: true });
+			expect(Date.now() - started).toBeLessThan(1_400);
+			const stop = new AbortController();
+			setTimeout(() => stop.abort(), 300);
+			const cancelled = setup({ responses: { show: claudeDetail }, delayMs: { show: 1_500 } });
+			expect(await cancelled.call("nexus_wait", { thread: idA }, stop.signal)).toEqual({ thread: idA, settled: false, cancelled: true });
+		});
+
+		test("nexus_read shows a result whose call the window dropped", async () => {
+			const orphan = { kind: "claude", entries: [{ kind: "result", at: 3, toolUseId: "toolu_0", output: "FAIL: expected 1 but got 2", isError: true }, { kind: "reply", at: 4, text: "The test fails." }], dropped: 40, readAt: 9, working: false };
+			const { call } = setup({ responses: { show: claudeDetail, conversation: orphan } });
+			expect((await call("nexus_read", { thread: idA })).conversation).toBe("(40 older entries are not kept)\n\n[tool result] (failed)\nFAIL: expected 1 but got 2\n\nThe test fails.");
+		});
+
+		test("nexus_read gives each tool's and background task's output under it", async () => {
+			const failing = [asked, { kind: "tool", at: 2, id: "toolu_1", name: "Bash", input: { command: "npm test" } }, { kind: "result", at: 3, toolUseId: "toolu_1", output: "FAIL: expected 1 but got 2\n", isError: true }, { kind: "task", at: 4, toolUseId: null, status: "completed", summary: "Lint", result: "2 warnings" }];
+			const { call } = setup({ responses: { show: claudeDetail, conversation: conversation(false, failing) } });
+			expect((await call("nexus_read", { thread: idA })).conversation).toBe('> Fix the probe\n\n[tool] Bash {"command":"npm test"} (failed)\nFAIL: expected 1 but got 2\n\n[task] completed: Lint\n2 warnings');
+		});
+
+		test("nexus_wait does not take a worker still launching for one that settled", async () => {
+			const launching = { kind: "claude", entries: [], dropped: 0, readAt: null, working: false };
+			const { call, calls } = setup({ responses: { show: { ...claudeDetail, claudeWorker: { model: null, state: "starting" } }, conversation: launching } });
+			expect(await call("nexus_wait", { thread: idA, timeout_seconds: 3 })).toMatchObject({ settled: false, timed_out: true, worker: { state: "starting" }, reply: null });
+			expect(calls().filter((c) => c[0] === "conversation")).toHaveLength(2);
+		});
+
+		test("nexus_wait cancelled between readings is unsettled, whatever the one reading says", async () => {
+			const { call, calls } = setup({ responses: { show: claudeDetail, conversation: conversation(false, answered) } });
+			const stop = new AbortController();
+			setTimeout(() => stop.abort(), 500);
+			const result = await call("nexus_wait", { thread: idA }, stop.signal);
+			expect(result).toMatchObject({ settled: false, cancelled: true, reply: "Reading it.\n\nFixed." });
+			expect(result.timed_out).toBeUndefined();
+			expect(calls().filter((c) => c[0] === "conversation")).toHaveLength(1);
+		});
+
+		test("a deadline that passes during a reading ends the wait with the reading before", async () => {
+			let reads = 0;
+			const slow: Nexus = {
+				bin: "nexus",
+				async run(args, signal) {
+					if (args[0] === "show") return claudeDetail;
+					if (reads++ === 0) return conversation(false, answered);
+					return new Promise((_, reject) => signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))));
+				},
+				async watch() {},
+				async attach() {},
+				async version() {
+					return "nexus 0.19.0\n";
+				},
+			};
+			const first = { detail: claudeDetail, conversation: parseConversation(await slow.run(["conversation"]), "conversation") };
+			const started = Date.now();
+			const waited = await waitClaude(slow, idA, first, started + 3_000);
+			expect(Date.now() - started).toBeLessThan(3_400);
+			expect(waited).toMatchObject({ settled: false, timedOut: true, cancelled: false, last: first });
+		});
+
+		test("nexus_wait counts its first reading inside the timeout", async () => {
+			const { call } = setup({ responses: { show: claudeDetail, conversation: conversation(true, [asked]) }, delayMs: { conversation: 1_500 } });
+			const started = Date.now();
+			expect(await call("nexus_wait", { thread: idA, timeout_seconds: 3 })).toMatchObject({ settled: false, timed_out: true });
+			expect(Date.now() - started).toBeLessThan(3_000);
+		});
+
+		test("nexus_wait with a timeout too near for a second reading ends unsettled", async () => {
+			const { call } = setup({ responses: { show: claudeDetail, conversation: conversation(false, answered) } });
+			expect(await call("nexus_wait", { thread: idA, timeout_seconds: 1 })).toMatchObject({ settled: false, timed_out: true, reply: "Reading it.\n\nFixed." });
+		});
 	});
 });
