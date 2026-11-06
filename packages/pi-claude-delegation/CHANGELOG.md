@@ -4,6 +4,12 @@ The scoped `@ramtinj95/pi-claude-delegation` package starts at 0.1.0. Entries
 for `pi-claude-bridge` 0.7.0 and earlier are retained below as inherited
 upstream history under the MIT license.
 
+## 0.3.0
+
+### Minor Changes
+
+- [`014ec96`](https://github.com/ramtinJ95/ramtin-pi-stuff/commit/014ec96746513497920ad7403fbe1e4adfe06419) Thanks [@ramtinJ95](https://github.com/ramtinJ95)! - Require Pi 1.5.0 or newer and develop against it. Tool parameter enums now come from a local TypeBox helper, because Pi 1.5's `StringEnum` no longer returns a TypeBox schema; the emitted JSON schema is unchanged.
+
 ## 0.2.0 — 2026-10-11
 
 - **Bump: require Pi 1.1.0 and test on 1.1.0** — Develop against exact 1.1.0 `pi-ai`, `pi-coding-agent`, and `pi-tui` and typebox 1.3.27, the versions Pi 1.1 ships, and declare the Pi packages as `"*"` peers, as Pi's package guidance asks. Read the model catalog with `getBuiltinModels` from `@earendil-works/pi-ai/providers/all` instead of the deprecated `getModels` from `@earendil-works/pi-ai/compat`, an entry point Pi plans to delete. Older Pi installations must upgrade before using this release.

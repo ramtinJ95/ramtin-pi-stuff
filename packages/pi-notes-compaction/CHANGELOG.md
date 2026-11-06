@@ -1,5 +1,11 @@
 # @howaboua/pi-notes-compaction
 
+## 0.0.15
+
+### Patch Changes
+
+- [`9b53d7a`](https://github.com/ramtinJ95/ramtin-pi-stuff/commit/9b53d7aa0b1bc89350936407967ec4906476706c) Thanks [@ramtinJ95](https://github.com/ramtinJ95)! - First release under `@ramtinj95`: a maintained fork of `@howaboua/pi-shepherdr` and `@howaboua/pi-notes-compaction` continued from howaboua-pi-stuff@5ede06b. Behaviour is unchanged; Shepherdr now loads shared context from `@ramtinj95/pi-notes-compaction`.
+
 ## 0.0.14
 
 - Requires Pi 1.5 or newer.
