@@ -44,26 +44,15 @@ Five wrong conclusions across two sessions came from skipping the above.
 
 ## Changelog
 
-Maintain an entry in the `## UNRELEASED` section at the top of `CHANGELOG.md` for every significant change, using the existing format:
+Record every significant change as a changeset from the repository root (`bun run changeset`). `CHANGELOG.md` is generated from changesets at release, so don't edit it by hand. Write the changeset summary as `**Tag: summary** — detail`; changesets adds the list marker and commit link.
 
-```
-- **Tag: summary** — detail
-```
-
-Do not add changelog entries for docs-only changes. If multiple entries in the UNRELEASED section pertain to the same feature, try to combine them into one entry,
+Do not add changesets for docs-only changes. If several changes in one release belong to the same feature, combine them into one changeset.
 
 Tags: `Add`, `Fix`, `Refactor`, `Tests`, `Bump`, `Deprecate`, `Remove`.
 
 ## Release
 
-No build step — the package ships `src` TypeScript as-is (see `files` in `package.json`). To cut version `X.Y.Z`:
-
-1. **Changelog** — rename the `## UNRELEASED` section to `## X.Y.Z — YYYY-MM-DD`.
-2. **Bump** — set `version` to `X.Y.Z` in `package.json`.
-3. **Commit** — `git commit -m "Release X.Y.Z"` (changelog + package.json only).
-4. **Tag** — `git tag pi-claude-delegation-vX.Y.Z`. The namespace avoids collisions with inherited `pi-claude-bridge` tags.
-5. **Push commit and tag together** — `git push origin main pi-claude-delegation-vX.Y.Z`.
-6. **Publish** — `npm login` and `npm publish`.
+No build step — the package ships `src` TypeScript as-is (see `files` in `package.json`). Releases go through the monorepo's changesets flow described in the root README: merging the "Version Packages" PR publishes to npm and tags `@ramtinj95/pi-claude-delegation@X.Y.Z`. The older `pi-claude-delegation-vX.Y.Z` tags predate the monorepo.
 
 ## Tests
 

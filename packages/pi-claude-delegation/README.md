@@ -2,7 +2,7 @@
 
 [![npm version](https://img.shields.io/npm/v/@ramtinj95/pi-claude-delegation)](https://www.npmjs.com/package/@ramtinj95/pi-claude-delegation)
 
-Pi extension that integrates Claude Code via the [Agent SDK](https://github.com/anthropics/claude-agent-sdk-typescript). This package is maintained from [ramtinJ95/pi-claude-delegation](https://github.com/ramtinJ95/pi-claude-delegation), forked from [elidickinson/pi-claude-bridge](https://github.com/elidickinson/pi-claude-bridge), which was based initially on [claude-agent-sdk-pi](https://github.com/prateekmedia/claude-agent-sdk-pi) by Prateek Sunal. The inherited MIT license and upstream history are preserved.
+Pi extension that integrates Claude Code via the [Agent SDK](https://github.com/anthropics/claude-agent-sdk-typescript). This package is maintained in the [ramtin-pi-stuff](https://github.com/ramtinJ95/ramtin-pi-stuff) monorepo, forked from [elidickinson/pi-claude-bridge](https://github.com/elidickinson/pi-claude-bridge), which was based initially on [claude-agent-sdk-pi](https://github.com/prateekmedia/claude-agent-sdk-pi) by Prateek Sunal. The inherited MIT license and upstream history are preserved.
 
 1. **Provider** — Use Opus/Sonnet/Haiku as models in pi, with all tool calls flowing through pi's TUI
 2. **DelegateToClaude tool** — Delegate tasks or questions to Claude Code when using another provider
