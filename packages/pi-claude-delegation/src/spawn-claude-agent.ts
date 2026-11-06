@@ -1,4 +1,5 @@
-import { StringEnum, type Context } from "@earendil-works/pi-ai";
+import { type Context } from "@earendil-works/pi-ai";
+import { StringEnum } from "./string-enum.js";
 import { buildSessionContext, keyHint, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";

@@ -1,10 +1,10 @@
 # Pi compatibility baseline
 
-The fork requires Pi 1.1.0 or newer and develops against exact 1.1.0 versions
+The fork requires Pi 1.5.0 or newer and develops against exact 1.5.0 versions
 of `@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent`, and
 `@earendil-works/pi-tui`. Node.js 22.19 or newer is required.
 
-Upgrade older Pi installations before using this release. 1.1.0 is the oldest
+Upgrade older Pi installations before using this release. 1.5.0 is the oldest
 release this fork is tested on; nothing older is supported. The Pi packages are
 declared as `"*"` peers, as Pi's package guidance asks for host-provided
 modules, so npm does not enforce this floor: Pi installs extensions without
@@ -80,7 +80,8 @@ summary function without uploading a report.
 
 ## Live validation limits
 
-Core transcript, summary, and cache paths are tested on Pi 1.1.0.
+Core transcript, summary, and cache paths were last live-tested on Pi 1.1.0; the
+live suite has not yet been rerun on the 1.5.0 baseline.
 The full live suite additionally requires an authenticated alternate provider and
 permission for its fixture tools. Managed-policy denials are not overridden to
 make those tests pass. The pinned third-party rpiv/pi-subagents integration also
