@@ -518,7 +518,8 @@ describe("model tools", () => {
 			expect(await quiet.call("nexus_wait", { thread: idA, timeout_seconds: 3 })).toMatchObject({ settled: false, timed_out: true });
 			const worked = setup({ responses: { show: claudeDetail, conversation: conversation(true, []) }, after: { conversation: { conversation: conversation(false, []) } } });
 			expect(await worked.call("nexus_wait", { thread: idA })).toMatchObject({ settled: true, reply: null });
-		});
+			// Two real waits, the first a full 3s timeout: past bun's 5s default.
+		}, 10_000);
 
 		test("nexus_wait whose first reading outlives the timeout or a cancel gives only that", async () => {
 			const timed = setup({ responses: { show: claudeDetail }, delayMs: { show: 1_500 } });
