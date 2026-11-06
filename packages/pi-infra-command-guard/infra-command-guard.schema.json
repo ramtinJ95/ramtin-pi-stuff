@@ -1,0 +1,177 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/ramtinJ95/pi-infra-command-guard/main/infra-command-guard.schema.json",
+  "title": "Pi infrastructure command guard configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "guardUnclassifiedCommands": {
+      "type": "boolean",
+      "default": true,
+      "description": "Guard commands that cannot be classified. Setting this to false deliberately allows uncertainty-only commands and can miss dangerous behavior hidden by unsupported syntax, variables, opaque runners, unknown operations, or unread inputs."
+    },
+    "guards": {
+      "type": "object",
+      "description": "Per-command guard overrides. Every guard defaults to enabled when omitted.",
+      "additionalProperties": false,
+      "properties": {
+        "kubectl": { "type": "boolean", "default": true },
+        "terraform": { "type": "boolean", "default": true },
+        "helm": { "type": "boolean", "default": true },
+        "argocd": { "type": "boolean", "default": true },
+        "aws": { "type": "boolean", "default": true },
+        "az": { "type": "boolean", "default": true },
+        "gcloud": { "type": "boolean", "default": true },
+        "docker": { "type": "boolean", "default": true },
+        "git": { "type": "boolean", "default": true },
+        "vault": { "type": "boolean", "default": true },
+        "find": { "type": "boolean", "default": true },
+        "rm": { "type": "boolean", "default": true },
+        "rmdir": { "type": "boolean", "default": true },
+        "rsync": { "type": "boolean", "default": true },
+        "shred": { "type": "boolean", "default": true },
+        "truncate": { "type": "boolean", "default": true },
+        "unlink": { "type": "boolean", "default": true }
+      }
+    },
+    "commands": {
+      "type": "object",
+      "description": "Per-command overrides. Rules are normalized token prefixes and may use * within a token.",
+      "additionalProperties": false,
+      "properties": {
+        "kubectl": { "$ref": "#/$defs/commandOverrides" },
+        "terraform": { "$ref": "#/$defs/commandOverrides" },
+        "helm": { "$ref": "#/$defs/commandOverrides" },
+        "argocd": { "$ref": "#/$defs/commandOverrides" },
+        "aws": { "$ref": "#/$defs/commandOverrides" },
+        "az": { "$ref": "#/$defs/commandOverrides" },
+        "gcloud": { "$ref": "#/$defs/commandOverrides" },
+        "docker": { "$ref": "#/$defs/commandOverrides" },
+        "git": { "$ref": "#/$defs/commandOverrides" },
+        "vault": { "$ref": "#/$defs/commandOverrides" },
+        "find": { "$ref": "#/$defs/commandOverrides" },
+        "rm": { "$ref": "#/$defs/commandOverrides" },
+        "rmdir": { "$ref": "#/$defs/commandOverrides" },
+        "rsync": { "$ref": "#/$defs/commandOverrides" },
+        "shred": { "$ref": "#/$defs/commandOverrides" },
+        "truncate": { "$ref": "#/$defs/commandOverrides" },
+        "unlink": { "$ref": "#/$defs/commandOverrides" }
+      }
+    },
+    "notifications": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": false
+        },
+        "backend": {
+          "type": "string",
+          "enum": ["auto", "terminal", "native"],
+          "default": "auto"
+        }
+      }
+    },
+    "sound": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": false
+        },
+        "path": {
+          "type": ["string", "null"],
+          "default": null
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "enabled": { "const": true }
+            },
+            "required": ["enabled"]
+          },
+          "then": {
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": ["path"]
+          }
+        }
+      ]
+    },
+    "integrations": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "herdr": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true,
+              "description": "Use native delivery for auto and Herdr's broker for explicit terminal delivery when running inside a Herdr pane."
+            }
+          }
+        },
+        "typesafe": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Experimental. After a block based on a positively recognized risk, ask TypeSafe (System One, model jev-latest) whether the guard reason describes the blocked command. Advisory only: it never changes a block or grants approval. Requires TYPESAFE_API_KEY in Pi's environment.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false,
+              "description": "Send known-risk blocks to TypeSafe for an advisory reason check. Disabled by default; no requests are made while false."
+            },
+            "timeoutMs": {
+              "type": "integer",
+              "minimum": 1000,
+              "maximum": 30000,
+              "default": 8000,
+              "description": "Per-request timeout. Timed-out reviews are reported in the approval overlay and never delay the block."
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "commandOverrides": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "allow": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512,
+            "pattern": "[^\\s*]"
+          }
+        },
+        "requireApproval": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512,
+            "pattern": "\\S"
+          }
+        }
+      }
+    }
+  }
+}

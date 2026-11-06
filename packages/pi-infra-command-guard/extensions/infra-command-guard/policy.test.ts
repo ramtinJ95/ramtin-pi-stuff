@@ -1,0 +1,767 @@
+import assert from "node:assert/strict";
+import {
+	DEFAULT_COMMAND_OVERRIDES,
+	DEFAULT_COMMAND_POLICY_SETTINGS,
+	DEFAULT_GUARD_SETTINGS,
+	type CommandOverrides,
+	type CommandPolicySettings,
+	type GuardedExecutable,
+} from "./guarded-executables.ts";
+import { evaluateCommand, evaluateInvocation } from "./policy.ts";
+import { extractInvocation, parseSimpleCommands } from "./shell.ts";
+import { test } from "./test-harness.ts";
+
+function policyWith(overrides: Partial<CommandPolicySettings>): CommandPolicySettings {
+	return { ...DEFAULT_COMMAND_POLICY_SETTINGS, ...overrides };
+}
+
+test("parsed invocation evaluation preserves command decisions, basis, and reasons", () => {
+	const commands = [
+		'kubectl --context "" delete pod api', '"kubectl" get secrets', 'kubectl get pods',
+		'kubectl get --raw=/api/v1', 'terraform output', 'terraform plan', 'helm list',
+		'helm template api --post-renderer ./renderer', 'git -c alias.x="!echo test" x',
+		'aws ec2 describe-instances', 'aws unknown operation', 'docker compose --dry-run=false down --volumes',
+		'vault read "secret/a b"', 'rm ""', 'find . -exec rm {} \\;',
+		'rsync --delete source/ destination/', 'grep "kubectl" README.md', 'grep kubectl README.md',
+		'exec ls', 'source ./safe.sh', '$TOOL target', 'K=kubectl',
+		`TOOL="rm" bash -c '"$TOOL" /tmp/victim'`, `env TOOL="rm" bash -c '"$TOOL" /tmp/victim'`,
+		'bash -lc "kubectl port-forward service/api 8080:80"',
+	];
+	for (const guardUnclassifiedCommands of [true, false]) {
+		for (const overrides of [{}, { guards: { ...DEFAULT_GUARD_SETTINGS, rm: false } }, {
+			commands: { ...DEFAULT_COMMAND_OVERRIDES, kubectl: { allow: ["delete", "get"], requireApproval: ["get pods"] } },
+		}]) {
+			const settings = policyWith({ guardUnclassifiedCommands, ...overrides });
+			for (const command of commands) {
+				const parsed = parseSimpleCommands(command);
+				assert.ok(!("error" in parsed), command);
+				assert.equal(parsed.segments.length, 1, command);
+				const segment = parsed.segments[0];
+				const invocation = extractInvocation(segment.words);
+				assert.ok(!("error" in invocation), command);
+				assert.deepEqual(evaluateInvocation(invocation, settings, segment), evaluateCommand(command, settings), command);
+			}
+		}
+	}
+});
+
+test("guarded-text scans retain assignments and wrappers outside stripped argv", () => {
+	for (const command of ['K=kubectl', `TOOL="rm" bash -c '"$TOOL" /tmp/victim'`, `env TOOL="rm" bash -c '"$TOOL" /tmp/victim'`]) {
+		assert.equal(evaluateCommand(command).allow, false, command);
+		assert.equal(evaluateCommand(command, policyWith({ guardUnclassifiedCommands: false })).allow, true, command);
+	}
+});
+
+test("port-forward exceptions require the actual operation and retain raw-control checks", () => {
+	for (const guardUnclassifiedCommands of [true, false]) {
+		const settings = policyWith({ guardUnclassifiedCommands });
+		for (const command of [
+			"kubectl delete pod port-forward",
+			"kubectl get --raw /api/v1/namespaces/port-forward/secrets",
+			"kubectl port-forward service/api 8080:80 --raw=/api/v1",
+			"kubectl port-forward service/api 8080:80 & kubectl delete pod port-forward",
+		]) {
+			assert.equal(evaluateCommand(command, settings).allow, false, command);
+		}
+	}
+	for (const command of [
+		"kubectl port-forward service/api 8080:80",
+		"nohup kubectl --context staging port-forward service/api 8080:80 >/tmp/pf.log 2>&1 &",
+		'bash -lc "kubectl --context staging port-forward service/api 8080:80"',
+		'bash -l -c "kubectl port-forward service/api 8080:80"',
+		'xargs kubectl port-forward service/api 8080:80',
+		'xargs -n 1 kubectl --context staging port-forward service/api 8080:80',
+		'xargs -I{} kubectl port-forward service/{} 8080:80',
+		"kubectl port-forward service/api 8080:80 & kubectl port-forward service/db 5432:5432 &",
+	]) assert.equal(evaluateCommand(command).allow, true, command);
+	assert.equal(evaluateCommand('bash -lc "kubectl delete pod port-forward"').allow, false);
+	assert.equal(evaluateCommand('bash script.sh -c "kubectl port-forward service/api 8080:80"').allow, false);
+	assert.equal(evaluateCommand('xargs kubectl delete pod port-forward').allow, false);
+	assert.equal(evaluateCommand('xargs kubectl get --raw /api/v1/port-forward').allow, false);
+});
+
+test("Compose deletion previews honor dry-run values and repeated-option order", () => {
+	for (const endpoint of ["", "--context production "]) {
+		for (const [flags, allowed] of [
+			["--dry-run", true], ["--dry-run=true", true], ["--dry-run=1", true],
+			["--dry-run=false", false], ["--dry-run=0", false],
+			["--dry-run --dry-run=false", false], ["--dry-run=false --dry-run", true],
+			["--dry-run=true --dry-run=false", false], ["--dry-run=false --dry-run=true", true],
+		] as const) {
+			for (const action of ["down --volumes", "rm api"]) {
+				const command = `docker ${endpoint}compose ${flags} ${action}`;
+				assert.equal(evaluateCommand(command).allow, allowed, command);
+			}
+		}
+	}
+});
+
+test("rm classification covers executable paths and common wrappers", () => {
+	for (const command of [
+		"rm -rf target",
+		"/bin/rm -rf target",
+		"sudo rm -rf target",
+		"env FOO=bar rm -rf target",
+		"command rm -rf target",
+		"xargs rm",
+		"find . -exec rm {} ;",
+	]) {
+		assert.equal(evaluateCommand(command).allow, false, command);
+	}
+
+	assert.equal(evaluateCommand('printf "%s\\n" "rm"').allow, true);
+	assert.equal(evaluateCommand("kubectl port-forward service/api 8080:80 && rm marker").allow, false);
+});
+
+test("destructive local file commands require approval without blocking ordinary find and rsync", () => {
+	for (const command of [
+		"unlink target",
+		"sudo /usr/bin/unlink target",
+		"rmdir empty-directory",
+		"shred secrets.txt",
+		"truncate -s 0 database.sqlite",
+		"find . -type f -delete",
+		"busybox find . -delete",
+		"toybox find . -delete",
+		"toybox --long unlink target",
+		"find . -exec rm -rf {} \\;",
+		"find . -execdir unlink {} \\;",
+		"find /bin -name rm -exec {} -rf target \\;",
+		`find /bin -name rm -exec sh -c '{} -rf target' \\;`,
+		"rsync -a --delete source/ destination/",
+		"rsync -a --delete-b source/ destination/",
+		"rsync --delete-before source/ destination/",
+		"rsync --delete-during source/ destination/",
+		"rsync --delete-delay source/ destination/",
+		"rsync --delete-after source/ destination/",
+		"rsync --delete-excluded source/ destination/",
+		"rsync --delete-missing-args source/ destination/",
+		"rsync --remove-source-files source/ destination/",
+		`rsync --rsync-path='rm -rf target; rsync' source/ host:destination/`,
+	]) {
+		assert.equal(evaluateCommand(command).allow, false, command);
+	}
+
+	for (const command of [
+		"find . -type f -name '*.tmp' -print",
+		"find . -type f -exec python process.py {} \\;",
+		"busybox find . -type f -print",
+		"toybox find . -type f -print",
+		"toybox --long find . -type f -print",
+		"rsync -a source/ destination/",
+		"rsync -e ssh source/ host:destination/",
+		"rsync --rsh='ssh -p 2222' source/ host:destination/",
+		"rsync --rsync-path=/usr/local/bin/rsync source/ host:destination/",
+		"rsync --delete --no-delete source/ destination/",
+		"rsync --delete-excluded --no-delete-excluded source/ destination/",
+		"rsync --remove-source-files --no-remove-source-files source/ destination/",
+		"rsync --dry-run --delete source/ destination/",
+		"rsync -an --delete source/ destination/",
+		"unlink --help",
+		"rmdir --version",
+		"shred --help",
+		"truncate --version",
+		"rg find README.md",
+		"printf '%s\\n' unlink truncate rsync",
+	]) {
+		assert.equal(evaluateCommand(command).allow, true, command);
+	}
+
+	// Values consumed by rsync options are not active dry-run flags.
+	assert.equal(evaluateCommand("rsync -e --dry-run --delete source/ destination/").allow, false);
+	assert.equal(evaluateCommand("rsync --filter --dry-run --delete source/ destination/").allow, false);
+	assert.equal(evaluateCommand("rsync --bw --dry-run --delete source/ destination/").allow, false);
+	assert.equal(evaluateCommand("rsync --dry-run --no-dry-run --delete source/ destination/").allow, false);
+	assert.equal(evaluateCommand("rsync -n --no-dry --delete source/ destination/").allow, false);
+	assert.equal(evaluateCommand("rsync --no-dry-run --dry-run --delete source/ destination/").allow, true);
+	assert.equal(evaluateCommand("rsync --delete --delete-excluded --no-delete-excluded source/ destination/").allow, false);
+	assert.equal(evaluateCommand(`rsync -e "sh -c 'rm -rf target'" source/ host:destination/`).allow, false);
+	assert.equal(evaluateCommand(`rsync --rs="sh -c 'rm -rf target'" source/ host:destination/`).allow, false);
+	const findDisabled = { ...DEFAULT_GUARD_SETTINGS, find: false };
+	assert.equal(evaluateCommand("find . -exec unlink {} \\;", policyWith({ guards: findDisabled })).allow, false);
+	assert.equal(evaluateCommand("find /bin -name rm -exec {} -rf target \\;", policyWith({ guards: findDisabled })).allow, false);
+	const rsyncDisabled = { ...DEFAULT_GUARD_SETTINGS, rsync: false };
+	assert.equal(evaluateCommand(`rsync -e "sh -c 'rm -rf target'" source/ host:destination/`, policyWith({ guards: rsyncDisabled })).allow, false);
+});
+
+test("kubectl and terraform retain their safe and approval-required behavior", () => {
+	for (const command of [
+		"kubectl get pods",
+		"/usr/local/bin/kubectl --context prod get pods",
+		"sudo -n kubectl -n production describe deployment/api",
+		"kubectl logs deployment/api",
+		"kubectl port-forward service/api 8080:80",
+		"nohup kubectl port-forward service/api 8080:80 >port-forward.log 2>&1 &",
+		"kubectl auth can-i get pods",
+		"terraform plan",
+		"terraform -chdir=infra plan",
+		"env TF_IN_AUTOMATION=1 terraform show plan.out",
+		"terraform state list",
+		"terraform workspace show",
+	]) {
+		assert.equal(evaluateCommand(command).allow, true, command);
+	}
+
+	for (const command of [
+		"kubectl delete pod api",
+		"/usr/local/bin/kubectl --context prod apply -f deployment.yaml",
+		"env KUBECONFIG=cluster.yaml kubectl patch deployment api -p {}",
+		"kubectl get secrets",
+		"kubectl describe secret/api-token",
+		"kubectl --raw=/api/v1/namespaces/default/secrets",
+		"kubectl rollout restart deployment/api",
+		"terraform apply",
+		"sudo terraform -chdir infra apply plan.out",
+		"terraform destroy",
+		"terraform output",
+		'bash -lc "kubectl get pods"',
+		'python -c "import os; os.system(\'terraform apply\')"',
+	]) {
+		assert.equal(evaluateCommand(command).allow, false, command);
+	}
+});
+
+test("helm allows explicit reads and guards mutations or sensitive output", () => {
+	for (const command of [
+		"helm version --short",
+		"helm --kube-context prod list --all-namespaces",
+		"helm -n production status api",
+		"helm history api",
+		"helm search repo ingress",
+		"helm show values ./chart",
+		"helm template api ./chart",
+		"helm lint ./chart",
+		"helm repo list",
+		"helm plugin list",
+		"helm dependency list ./chart",
+		"helm help uninstall",
+	]) {
+		assert.equal(evaluateCommand(command).allow, true, command);
+	}
+
+	for (const command of [
+		"helm install api ./chart",
+		"helm upgrade api ./chart",
+		"helm uninstall api",
+		"helm rollback api 2",
+		"helm test api",
+		"helm get values api",
+		"helm repo add internal https://charts.example.com",
+		"helm repo update",
+		"helm plugin install https://example.com/plugin.git",
+		"helm registry login registry.example.com",
+		"helm push chart.tgz oci://registry.example.com/charts",
+		"helm template api ./chart --post-renderer ./renderer",
+		"helm diff upgrade api ./chart",
+		"sudo /opt/homebrew/bin/helm upgrade api ./chart",
+	]) {
+		assert.equal(evaluateCommand(command).allow, false, command);
+	}
+});
+
+test("argocd allows explicit reads and guards application or control-plane mutations", () => {
+	for (const command of [
+		"argocd version --client",
+		"argocd --server argocd.example.com app list",
+		"argocd app get api",
+		"argocd app history api",
+		"argocd app logs api",
+		"argocd app resources api",
+		"argocd app wait api --health",
+		"argocd app actions list api",
+		"argocd cluster list",
+		"argocd cluster get production",
+		"argocd repo list",
+		"argocd repo get https://github.com/example/repo.git",
+		"argocd proj list",
+		"argocd account can-i sync applications '*'",
+		"argocd cert list --cert-type https",
+		"argocd gpg list",
+	]) {
+		assert.equal(evaluateCommand(command).allow, true, command);
+	}
+
+	for (const command of [
+		"argocd app create api --repo https://github.com/example/repo.git",
+		"argocd app sync api",
+		"argocd app rollback api 2",
+		"argocd app delete api",
+		"argocd app set api --revision main",
+		"argocd app terminate-op api",
+		"argocd app patch-resource api --kind Deployment",
+		"argocd app actions run restart --kind Deployment api",
+		"argocd app diff api",
+		"argocd app manifests api",
+		"argocd cluster add production",
+		"argocd cluster rm production",
+		"argocd repo add https://github.com/example/repo.git",
+		"argocd proj create production",
+		"argocd account generate-token",
+		"argocd admin cluster kubeconfig production",
+		"argocd login argocd.example.com",
+		"env ARGOCD_OPTS=--grpc-web /usr/local/bin/argocd app sync api",
+	]) {
+		assert.equal(evaluateCommand(command).allow, false, command);
+	}
+});
+
+test("aws allows explicit reads and guards mutations or sensitive reads", () => {
+	for (const command of [
+		"aws --profile production ec2 describe-instances",
+		"aws ec2 describe-instances --region us-east-1",
+		"aws ec2 --debug describe-instances",
+		"sudo /usr/local/bin/aws s3 ls s3://releases",
+		"aws sts get-caller-identity",
+		"aws dynamodb scan --table-name jobs",
+		"aws cloudformation validate-template --template-body file://template.yaml",
+		"aws configure list-profiles",
+		"aws --version",
+	]) {
+		assert.equal(evaluateCommand(command).allow, true, command);
+	}
+
+	for (const command of [
+		"aws ec2 terminate-instances --instance-ids i-123",
+		"aws ec2 terminate-instances --instance-ids i-123 --dry-run",
+		"aws s3 cp artifact.zip s3://releases/artifact.zip",
+		"aws cloudformation deploy --stack-name production",
+		"aws secretsmanager list-secrets",
+		"aws secretsmanager get-secret-value --secret-id database",
+		"aws ssm get-parameter --name /production/password --with-decryption",
+		"aws ssm get-parameter-history --name /production/password --with-decryption",
+		"aws ecr get-login-password",
+		"aws eks get-token --cluster-name production",
+		"aws apigateway get-api-key --api-key abc --include-value",
+		"aws lambda get-function-configuration --function-name api",
+		"aws lambda list-functions",
+		"aws ecs describe-task-definition --task-definition api",
+		"aws sts get-session-token",
+		"aws configure export-credentials",
+		"aws madeup inspect-resource",
+	]) {
+		assert.equal(evaluateCommand(command).allow, false, command);
+	}
+});
+
+test("az allows explicit reads and guards mutations or sensitive reads", () => {
+	for (const command of [
+		"az --subscription production vm list --resource-group api",
+		"az vm --subscription production list",
+		"az vm show --ids /subscriptions/example/resourceGroups/api/providers/Microsoft.Compute/virtualMachines/web",
+		"az group exists --name production",
+		"az deployment group what-if --resource-group api --template-file main.bicep",
+		"az monitor metrics list --resource vm-id",
+		"az keyvault key list --vault-name production",
+		"az lock list --resource-group production",
+		"az restore-point collection list --resource-group production --vm-name web",
+		"az search service list --resource-group production",
+		"az account show",
+		"az version",
+	]) {
+		assert.equal(evaluateCommand(command).allow, true, command);
+	}
+
+	for (const command of [
+		"az vm delete --resource-group api --name web --yes",
+		"az group create --name production --location westus",
+		"az search service delete --name index --resource-group production",
+		"az account set --subscription production",
+		"az login",
+		"az account get-access-token",
+		"az aks get-credentials --resource-group api --name production",
+		"az keyvault secret list --vault-name production",
+		"az keyvault secret show --vault-name production --name database",
+		"az storage account keys list --resource-group api --account-name data",
+		"az storage blob lease acquire list",
+		"az webapp config appsettings list --resource-group api --name web",
+		"az rest --method get --url https://management.azure.com/subscriptions",
+	]) {
+		assert.equal(evaluateCommand(command).allow, false, command);
+	}
+});
+
+test("gcloud allows explicit reads and guards mutations or sensitive reads", () => {
+	for (const command of [
+		"gcloud --project production compute instances list",
+		"gcloud compute --project production instances list",
+		"gcloud compute instances describe web --zone us-central1-a",
+		"gcloud projects get-iam-policy production",
+		"gcloud logging read 'severity>=ERROR' --limit 10",
+		"gcloud asset search-all-resources --scope organizations/123",
+		"gcloud components list",
+		"gcloud config get-value project",
+		"gcloud auth list",
+		"gcloud run services list",
+		"gcloud deploy releases list --delivery-pipeline api --region us-central1",
+		"gcloud info",
+	]) {
+		assert.equal(evaluateCommand(command).allow, true, command);
+	}
+
+	for (const command of [
+		"gcloud compute instances delete web --zone us-central1-a --quiet",
+		"gcloud run deploy api --image us-docker.pkg.dev/project/api",
+		"gcloud storage cp list gs://production-bucket/list",
+		"gcloud config set project production",
+		"gcloud auth print-access-token",
+		"gcloud container clusters get-credentials production --region us-central1",
+		"gcloud secrets versions list database",
+		"gcloud secrets versions access latest --secret database",
+		"gcloud alpha compute instances list",
+		"gcloud --flags-file flags.yaml compute instances list",
+		"gcloud compute instances inspect web",
+	]) {
+		assert.equal(evaluateCommand(command).allow, false, command);
+	}
+});
+
+test("guarded commands fail closed through shell composition and obfuscation", () => {
+	for (const command of [
+		"printf ready && kubectl delete pod api",
+		"printf ready || terraform apply",
+		"printf pod | xargs kubectl delete",
+		"kubectl get pods & kubectl delete pod api",
+		"$(kubectl delete pod api)",
+		"`terraform apply`",
+		"K=kubectl $K delete pod api",
+		"K=kubectl; $K delete pod api",
+		"kube\\ctl delete pod api",
+		'ter"ra"form apply',
+		"find . -exec /bin/rm -rf {} +",
+		"printf target | xargs -n1 /bin/rm",
+		'bash -lc "helm uninstall api"',
+		'python -c "import os; os.system(\'argocd app sync api\')"',
+		"kubectl port-forward service/api 8080:80 & helm uninstall api",
+		"kubectl port-forward service/api 8080:80 & aws ec2 terminate-instances --instance-ids i-123",
+		"aws ec2 terminate-instances --instance-ids i-123",
+		"az vm delete --resource-group api --name web",
+			"gcloud compute instances delete web --zone us-central1-a",
+			"docker volume rm database",
+			"git reset --hard HEAD~1",
+			'bash -lc "git status"',
+			"vault read secret/production",
+		"$TOOL delete pod api",
+		'sudo "$TOOL" apply plan.out',
+		'"${KUBECTL}" delete pod api',
+		"$'r''m' -rf target",
+	]) {
+		assert.equal(evaluateCommand(command).allow, false, command);
+	}
+
+	for (const command of [
+		'printf "%s\\n" "kubectl delete pod api"',
+		'printf "%s\\n" "terraform apply"',
+		'printf "%s\\n" "rm -rf target"',
+		'printf "%s\\n" "$TOOL"',
+		'echo "${HOME}"',
+		'printf "%s\\n" "helm uninstall api"',
+		'printf "%s\\n" "argocd app sync api"',
+		'printf "%s\\n" "aws ec2 terminate-instances"',
+		'printf "%s\\n" "az vm delete"',
+			'printf "%s\\n" "gcloud compute instances delete"',
+			'printf "%s\\n" "docker volume rm database"',
+			'printf "%s\\n" "git reset --hard HEAD~1"',
+			"echo git reset --hard HEAD~1",
+			'printf "%s\\n" "vault read secret/production"',
+	]) {
+		assert.equal(evaluateCommand(command).allow, true, command);
+	}
+});
+
+test("classified-dangerous-only mode allows uncertainty but preserves positive risks", () => {
+	const relaxed = policyWith({ guardUnclassifiedCommands: false });
+	const uncertaintyOnly = [
+		'rg kubectl README.md',
+		'grep -R terraform docs',
+		'(git status --short && git log -1 --oneline)',
+		'$TOOL apply',
+		'K=kubectl; $K delete pod api',
+		'bash -lc "kubectl delete pod api"',
+		'eval kubectl delete pod api',
+		'if kubectl get pods; then true; fi',
+		'sudo --chdir kubectl get pods',
+		'find /bin -exec {} -rf target \\;',
+		'docker-compose ps',
+		'docker --future-global-option run nginx:latest',
+		'git --future-global-option status',
+		'vault future-command --future-option',
+		'aws madeup inspect-resource',
+		'az madeup inspect-resource',
+		'gcloud alpha compute instances list',
+		'gcloud --flags-file flags.yaml compute instances list',
+		'kubectl future-command resource',
+		'terraform future-command',
+		'helm future-command',
+		'argocd future-command',
+	];
+	for (const command of uncertaintyOnly) {
+		const conservative = evaluateCommand(command);
+		assert.equal(conservative.allow, false, `conservative: ${command}`);
+		if (!conservative.allow) assert.equal(conservative.basis, "unclassified", command);
+		assert.equal(evaluateCommand(command, relaxed).allow, true, `relaxed: ${command}`);
+	}
+	assert.equal(evaluateCommand('rg -n "kubectl|vault" README.md').allow, true, "quoted search was already allowed");
+	assert.equal(evaluateCommand('rg -n "kubectl|vault" README.md', relaxed).allow, true);
+
+	for (const command of [
+		"rm target",
+		"kubectl delete pod api",
+		"vault read secret/production",
+		"terraform apply",
+		"docker exec api sh",
+		"docker run --privileged nginx",
+		"helm template api ./chart --post-renderer ./renderer",
+		"git -c alias.deploy='!dangerous-command' deploy",
+		"kubectl --raw=/api/v1/secrets",
+		`rsync -e "sh -c 'rm -rf target'" source/ host:destination/`,
+	]) {
+		const decision = evaluateCommand(command, relaxed);
+		assert.equal(decision.allow, false, command);
+		if (!decision.allow) assert.equal(decision.basis, "knownRisk", command);
+	}
+});
+
+test("strongest policy basis wins across composed and delegated commands", () => {
+	const relaxed = policyWith({ guardUnclassifiedCommands: false });
+	for (const command of [
+		"rg kubectl README.md; rm target",
+		"$TOOL inspect; terraform apply",
+		"rm target; rg kubectl README.md",
+		"find . -exec printf kubectl {} \\; -exec rm {} \\;",
+	]) {
+		const decision = evaluateCommand(command, relaxed);
+		assert.equal(decision.allow, false, command);
+		if (!decision.allow) assert.equal(decision.basis, "knownRisk", command);
+	}
+
+	const commands: CommandOverrides = {
+		...DEFAULT_COMMAND_OVERRIDES,
+		git: { allow: [], requireApproval: ["status"] },
+	};
+	const explicit = evaluateCommand("rg kubectl README.md; git status", policyWith({
+		guardUnclassifiedCommands: false,
+		commands,
+	}));
+	assert.equal(explicit.allow, false);
+	if (!explicit.allow) assert.equal(explicit.basis, "explicitRule");
+});
+
+test("wrapper matrix cannot hide guarded executables", () => {
+	const riskyCommands = [
+		"kubectl delete pod api",
+		"terraform apply plan.out",
+		"helm upgrade api ./chart",
+		"argocd app sync api",
+		"aws ec2 terminate-instances --instance-ids i-123",
+		"az vm delete --resource-group api --name web",
+			"gcloud compute instances delete web --zone us-central1-a",
+			"docker volume rm database",
+			"git reset --hard HEAD~1",
+			"vault read secret/production",
+		"find . -delete",
+		"rm -rf target",
+		"rmdir target",
+		"rsync --delete source/ destination/",
+		"shred target",
+		"truncate -s 0 target",
+		"unlink target",
+	];
+	const wrappers = [
+		(command: string) => command,
+		(command: string) => `sudo -n ${command}`,
+		(command: string) => `env TEST_GUARD=1 ${command}`,
+		(command: string) => `command ${command}`,
+		(command: string) => `nice -n 5 ${command}`,
+		(command: string) => `nohup ${command}`,
+		(command: string) => `time -p ${command}`,
+		(command: string) => `/usr/bin/env TEST_GUARD=1 ${command}`,
+	];
+	for (const risky of riskyCommands) {
+		for (const wrap of wrappers) {
+			const command = wrap(risky);
+			assert.equal(evaluateCommand(command).allow, false, command);
+		}
+	}
+
+	for (const command of [
+		"sudo -n kubectl get pods",
+		"env KUBECONFIG=test kubectl logs deployment/api",
+		"command kubectl describe pod/api",
+		"nice -n 5 terraform plan",
+		"time -p terraform validate",
+		"/usr/bin/env TF_IN_AUTOMATION=1 terraform state list",
+		"sudo -n aws ec2 describe-instances",
+		"env AZURE_CORE_ONLY_SHOW_ERRORS=1 az vm list",
+		"command gcloud projects list",
+		"command docker ps",
+		"command git status --short",
+		"command vault status",
+		"nice -n 5 find . -type f -print",
+		"time -p rsync --dry-run --delete source/ destination/",
+	]) {
+		assert.equal(evaluateCommand(command).allow, true, command);
+	}
+});
+
+test("individual guard toggles bypass only their configured CLI", () => {
+	const riskyCommands: Record<GuardedExecutable, string> = {
+		argocd: "argocd app sync api",
+		aws: "aws ec2 terminate-instances --instance-ids i-123",
+			az: "az vm delete --resource-group api --name web",
+			docker: "docker volume rm database",
+			git: "git reset --hard HEAD~1",
+			vault: "vault read secret/production",
+		find: "find . -delete",
+		gcloud: "gcloud compute instances delete web --zone us-central1-a",
+		helm: "helm uninstall api",
+		kubectl: "kubectl delete pod api",
+		rm: "rm -rf target",
+		rmdir: "rmdir target",
+		rsync: "rsync --delete source/ destination/",
+		shred: "shred target",
+		terraform: "terraform apply",
+		truncate: "truncate -s 0 target",
+		unlink: "unlink target",
+	};
+
+	for (const [executable, command] of Object.entries(riskyCommands) as Array<[GuardedExecutable, string]>) {
+		const settings = { ...DEFAULT_GUARD_SETTINGS, [executable]: false };
+		assert.equal(evaluateCommand(command, policyWith({ guards: settings })).allow, true, executable);
+		assert.equal(evaluateCommand(`sudo ${command}`, policyWith({ guards: settings })).allow, true, `wrapped ${executable}`);
+		assert.equal(evaluateCommand(`${command} terraform`, policyWith({ guards: settings })).allow, true, `enabled guard name as argument to ${executable}`);
+		assert.equal(
+			evaluateCommand(`${command} && kubectl delete pod still-guarded`, policyWith({ guards: settings })).allow,
+			executable === "kubectl",
+			`mixed ${executable}`,
+		);
+	}
+});
+
+test("disabling every guard bypasses ambiguity and interactive-session restrictions", () => {
+	const disabled = Object.fromEntries(
+		Object.keys(DEFAULT_GUARD_SETTINGS).map((executable) => [executable, false]),
+	) as Record<GuardedExecutable, boolean>;
+	for (const command of ["$TOOL delete target", 'bash -lc "rm -rf target"', "kubectl delete pod api && terraform apply"]) {
+		assert.equal(evaluateCommand(command, policyWith({ guards: disabled })).allow, true, command);
+	}
+});
+
+test("disabled guards compose with enabled guards without hiding them", () => {
+	const settings = { ...DEFAULT_GUARD_SETTINGS, rm: false };
+	assert.equal(evaluateCommand('bash -lc "rm -rf target"', policyWith({ guards: settings })).allow, true);
+	assert.equal(evaluateCommand("rm terraform && terraform plan", policyWith({ guards: settings })).allow, true);
+	assert.equal(evaluateCommand("rm terraform && terraform apply", policyWith({ guards: settings })).allow, false);
+	assert.equal(evaluateCommand("$TOOL delete target", policyWith({ guards: settings })).allow, false);
+});
+
+test("custom allow rules bypass built-in policy after global-option normalization", () => {
+	const commands: CommandOverrides = {
+		...DEFAULT_COMMAND_OVERRIDES,
+		argocd: { allow: ["app sync"], requireApproval: [] },
+		aws: { allow: ["ec2 terminate-instances"], requireApproval: [] },
+			az: { allow: ["vm delete"], requireApproval: [] },
+			docker: { allow: ["volume rm dev-*"], requireApproval: [] },
+			git: { allow: ["reset --hard"], requireApproval: [] },
+			vault: { allow: ["read secret/development"], requireApproval: [] },
+		find: { allow: [". -delete"], requireApproval: [] },
+		gcloud: { allow: ["compute instances delete"], requireApproval: [] },
+		helm: { allow: ["uninstall"], requireApproval: [] },
+		kubectl: { allow: ["delete pod dev-*"], requireApproval: [] },
+		rm: { allow: ["-rf build"], requireApproval: [] },
+		rmdir: { allow: ["build"], requireApproval: [] },
+		rsync: { allow: ["--delete source/ destination/"], requireApproval: [] },
+		shred: { allow: ["build.log"], requireApproval: [] },
+		terraform: { allow: ["output"], requireApproval: [] },
+		truncate: { allow: ["-s 0 build.log"], requireApproval: [] },
+		unlink: { allow: ["build.log"], requireApproval: [] },
+	};
+	for (const command of [
+		"argocd --server argocd.example.com app sync api",
+		"aws --profile production ec2 terminate-instances --instance-ids i-123",
+			"az --subscription production vm delete --resource-group api --name web",
+			"docker --context production volume rm dev-database",
+			"docker -Hssh://production.example volume rm dev-database",
+			"git -Crepository reset --hard HEAD~1",
+			"vault -address=https://vault.example.com read secret/development",
+		"find . -delete",
+		"gcloud --project production compute instances delete web",
+		"helm --kube-context production uninstall api",
+		"sudo /usr/local/bin/kubectl --context production delete pod dev-api --wait=false",
+		"rm -rf build",
+		"rmdir build",
+		"rsync --delete source/ destination/",
+		"shred build.log",
+		"terraform -chdir=infra output database_password",
+		"truncate -s 0 build.log",
+		"unlink build.log",
+	]) {
+		assert.equal(evaluateCommand(command, policyWith({ commands })).allow, true, command);
+	}
+	assert.equal(
+		evaluateCommand("kubectl delete pod production-api", policyWith({ commands })).allow,
+		false,
+	);
+	assert.equal(
+		evaluateCommand("terraform output && kubectl delete pod production-api", policyWith({ commands })).allow,
+		false,
+	);
+});
+
+test("custom requireApproval rules override allow rules and built-in safe policy", () => {
+	const commands: CommandOverrides = {
+		...DEFAULT_COMMAND_OVERRIDES,
+			aws: { allow: [], requireApproval: ["--version"] },
+			docker: { allow: [], requireApproval: ["-v"] },
+			git: { allow: [], requireApproval: ["status"] },
+			vault: { allow: [], requireApproval: ["status", "-help"] },
+		gcloud: { allow: ["compute instances list"], requireApproval: ["compute instances list"] },
+		kubectl: { allow: [], requireApproval: ["port-forward"] },
+	};
+	for (const command of [
+			"aws --version",
+			"docker -v",
+			"git -C repository status --short",
+			"vault -address=https://vault.example.com status",
+			"vault -help",
+		"gcloud --project production compute instances list",
+		"kubectl port-forward service/api 8080:80",
+	]) {
+		const decision = evaluateCommand(command, policyWith({ commands }));
+		assert.equal(decision.allow, false, command);
+		if (!decision.allow) assert.match(decision.reason, /Custom command rule requires approval/);
+	}
+});
+
+test("custom allow rules cannot bypass opaque behavior flags", () => {
+	const commands: CommandOverrides = {
+		...DEFAULT_COMMAND_OVERRIDES,
+			gcloud: { allow: ["compute instances list"], requireApproval: [] },
+			git: { allow: ["deploy"], requireApproval: [] },
+		helm: { allow: ["template"], requireApproval: [] },
+		kubectl: { allow: ["get pods"], requireApproval: [] },
+		rsync: { allow: ["-e *", "--rsync-path=*"], requireApproval: [] },
+	};
+	for (const command of [
+			"gcloud compute instances list --flags-file=hidden.yaml",
+			"git -c alias.deploy='!dangerous-command' deploy",
+		"helm template api ./chart --post-renderer ./renderer",
+		"kubectl get pods --raw=/api/v1/secrets",
+		`rsync -e "sh -c 'rm -rf target'" source/ host:destination/`,
+		`rsync --rsync-path='rm -rf target; rsync' source/ host:destination/`,
+	]) {
+		assert.equal(evaluateCommand(command, policyWith({ commands })).allow, false, command);
+	}
+	const relaxed = policyWith({ guardUnclassifiedCommands: false, commands });
+	assert.equal(evaluateCommand("gcloud compute instances list --flags-file=hidden.yaml", relaxed).allow, true);
+	assert.equal(evaluateCommand("git -c alias.deploy='!dangerous-command' deploy", relaxed).allow, false);
+	assert.equal(evaluateCommand("helm template api ./chart --post-renderer ./renderer", relaxed).allow, false);
+});
+
+test("CLI master toggles take precedence over custom command rules", () => {
+	const guards = { ...DEFAULT_GUARD_SETTINGS, terraform: false };
+	const commands: CommandOverrides = {
+		...DEFAULT_COMMAND_OVERRIDES,
+		terraform: { allow: [], requireApproval: ["apply"] },
+	};
+	assert.equal(evaluateCommand("terraform apply", policyWith({ guards, commands })).allow, true);
+});
