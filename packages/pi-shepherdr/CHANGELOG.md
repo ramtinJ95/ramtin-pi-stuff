@@ -1,0 +1,304 @@
+# @howaboua/pi-shepherdr
+
+## 0.2.27
+
+- New remote workers retain their Core parent link for sidebar nesting.
+- Agent guidance now requires the agents tool for supported local and remote operations, including after failures, instead of bypassing it with shell commands.
+
+## 0.2.26
+
+- Requires Pi 1.5 or newer.
+
+  Update and restart controllers and workers together for shared Notes and boards.
+  - `spawn` and `assign` now return after task submission by default. Set `blocking: true` to wait for the result. A profile's `blocking` setting still overrides `spawn`.
+  - Agent references now use Pi session IDs across delegation, Notes and boards. Spawn returns one `agent` reference and sharing flags instead of separate context and board references.
+  - Attached Notes reads keep alias paths and read-only warnings consistent across native, Code and Notebook results.
+  - Rollover briefings now retain initial scope and the latest instruction without accumulating every message. Full messages remain in session history.
+  - Fixed repeated writes of unchanged agent snapshots.
+  - Closed workers no longer trigger a misleading notices-unavailable reconnect warning.
+  - Removed custom changelog suppression. Updates use Pi's native notices and `collapseChangelog`.
+
+## 0.2.25
+
+- When switching from the older Herdr TUI or another Core instance, reselect local watches.
+- Added Herdr Core and Herdr app support for local and remote delegation, focus, voice transfers, shared Notes and boards, including Windows hosts.
+- Added Core session discovery by terminal title, with spaces, hyphens and underscores treated alike.
+- Added `/herdr close-idle` to close idle children spawned by the current session branch, leaving attached and busy sessions open.
+- Spawn results now return `contextAgent` and `boardAgent` inside `sharing` instead of at the top level. The agent `target` is unchanged.
+- Reduced resume delays in sessions with many delegated agents, including closed children.
+- Remote sharing helpers now start only when sharing is used or restored, avoiding idle polling on unrelated machines.
+- Fixed intermediate tool calls being reported as completed agent work.
+- Agent guidance now distinguishes automatic background reports from blocking calls that must be awaited.
+- Agent tool declarations now accept action fields discovered through help, including in native codemode.
+
+## 0.2.24
+
+- - **BREAKING CHANGE:** Shared notes and history now use Notes instead of PCC. Install `@howaboua/pi-notes-compaction` and update participating hosts together to retain sharing. PCC remains optional for native parent linkage and cache affinity. Ordinary agent management requires neither extension.
+  - Agent guidance now directs controllers to close finished workers without preceding acknowledgement messages.
+  - Attached note reads keep private routing details out of results while preserving read-only and stale-checkpoint warnings. Attachment acknowledgements omit internal bookkeeping.
+  - GPT mode uses note-style agent help and Board briefings.
+
+## 0.2.23
+
+- - Worker roles now follow shared project instructions, preserving a longer common startup prefix and exact role whitespace across machines. Update and reload Shepherdr on controllers and worker hosts together.
+  - Fixed broken remote connections causing unhandled pipe errors and leaving requests pending.
+  - Worker-notice warnings now identify the affected machine and explain how to reconnect.
+  - GPT-mode Board briefings use denser guidance.
+  - Blocking agent calls can run in parallel while the controller waits for their results.
+  - Launched workers identify themselves to compatible extensions so human-only features can stay off.
+
+## 0.2.22
+
+- **Worker integrations**
+  - Fresh workers now share their parent's cache routing with compatible Codex Conversion. Shared notes remain optional, and native sessions and histories remain separate.
+  - Fresh workers inherit the live Board setting before their first request, keeping Board tools and guidance available from startup.
+  - Added an optional Pulses runner with persistent workers, saved-session reuse and completion reports that wake the parent.
+
+  **Agent tools and guidance**
+  - Expanded tool calls now show outgoing tasks, messages, replies and focus handoffs in full.
+  - Added compact agent help and hosted Board briefings for PCC GPT prompt mode.
+  - Agent discovery now uses the same help contract across native, Code and Notebook tools.
+  - Added delegation guidance for distinct scopes, shared project context and combined validation.
+  - Invalid spawn names now explain naming limits and how to use a longer label. Spawn guidance favours short two-word names.
+
+## 0.2.21
+
+- Fixed duplicate sessions showing a stack trace instead of a warning explaining how to restore shared context.
+
+## 0.2.20
+
+- Requires Pi 1.2.0 or newer.
+  - Idle assignments and completion reports now apply Pi's full prompt and tool preparation.
+  - Fixed local and remote spawns failing during session startup.
+  - Supervision reminders now distinguish other agents' tasks from the current task after compaction.
+
+## 0.2.19
+
+- Added Codex parent-child metadata for workers when used with PCC, preserved on resume and independent of shared notes.
+
+  Agent-read help and invalid-source errors now list supported sources.
+
+## 0.2.18
+
+- Replaced the Ask-specific `answer` action with `reply` for extension replies. Update and reload Ask and Shepherdr together on controllers and workers.
+  - Assignments now update running agents without losing pending results or replacing existing waiters. Messages and assignments also reach blocked workers.
+  - Extension messages and reply templates now travel between local and remote agents. Replies reach the owning extension without an extra model turn, including while a worker is busy or blocked.
+  - Pending extension messages remain visible until their producer closes them. Blocking messages arrive with the blocked result. Nonblocking messages notify separately once.
+  - Context rollover now retains supervised workers and their full follow-up instructions.
+  - Spawn labels no longer have a word-count restriction.
+
+## 0.2.17
+
+- Added slash-command discovery with configured descriptions for the current session or another agent, without executing commands or interrupting its work.
+
+## 0.2.16
+
+- ### Breaking changes
+  - **BREAKING CHANGE:** Boards moved to `@howaboua/pi-agent-board`. Install it in every participating session and reload Pi. Existing archives, session bindings and subscriptions are preserved. Board settings now live under `/board`, not `/herdr`. The board extension requires Pi 1.1 or newer and Node.js 22.18 or newer.
+  - **BREAKING CHANGE:** Custom extension commands sent through `agents` require an `extensionCommands` allowlist in the receiving session's global `pi-shepherdr.json`. Add the commands you use, then update and reload both controllers and receiving agents. `/herdr` Settings shows the config path and format.
+
+  ### Features
+  - Route `/quit`, `/model`, `/thinking`, `/name`, `/new`, `/reload`, `/resume` and `/compact` to agents. `/quit` shuts down Pi before closing its pane. Blocked commands return available commands instead of becoming model prompts. Skills and prompt templates remain supported.
+  - Focus running Pi sessions with `agents focus`, optionally transferring voice through GipPity Control, Codex Conversion or Grok Realtime. Handoffs retain the microphone and browser connection, identify the source device, session and pane without exposing session-file paths, and offer a return action without starting an agent task. Remote focus selects the destination's Herdr session. Client machine selection remains manual.
+  - Pass a shared-board thread to a spawned agent with `board_thread_id` so its initial task can read that context.
+  - Support shared and attached agents with different notes owners. Local checkpoints remain available after detachment.
+  - Accept `/root` as the live root of an agent's own family, including across connected machines. Missing or ambiguous roots fail explicitly. Exact spawn and find targets remain unchanged.
+
+  ### Improvements
+  - Agents returns help when called without arguments, including an empty structured object.
+  - Delegation guidance keeps task ownership with either the parent or its delegated agent, avoiding duplicated work.
+
+  ### Fixes
+  - Reduce redundant monitoring warnings when workers close, move or are unwatched. Retire question watches and suppress late collection failures.
+  - Coalesce repeated board-owner outage warnings until connectivity recovers. Preserve Herdr event-stream error details locally and over SSH.
+
+## 0.2.15
+
+- Show a quiet, theme-aware notice with the channel name after an agent successfully posts to the board. Notices remain visible in restored history without adding model context.
+
+## 0.2.14
+
+- Delegated agents keep reporting after task completion, including follow-up work.
+  - Added shared-board awareness across native, Code and Notebook modes.
+  - Preserves orchestration guidance across compaction and context rollover.
+  - Restores running workers' targets and full tasks after compaction or context rollover to prevent duplicate delegation.
+  - Parents receive and answer asynchronous Ask questions while workers continue.
+  - Updated agent guidance to close finished workers without sending extra messages.
+
+## 0.2.13
+
+- Added Remote notes and history to existing-agent attachment, including mixed Local, Tree and Remote storage.
+
+## 0.2.12
+
+- Manage orchestration, board defaults and SSH connections in `/herdr`, and attach existing agents without replacing their context.
+
+  ### Control panel
+  - `/herdr` opens Settings, Status and Connections instead of toggling orchestration. Panel controls replace `/herdr board` and `/herdr connect`; outside the TUI, `/herdr` reports status without changes.
+  - Add SSH machines through Herdr's interactive setup, preserving its installation approvals and machine catalog. Inspect connection errors and reconnect from Status.
+  - Fixed board startup when the global agent directory overlaps the launch folder's `.pi` directory. The global config is no longer mistaken for folder config.
+
+  ### Agent attachment
+  - `agents` gains `attach` and `detach` with independent context and board choices that persist across resume. Agent management stays in the tool, not the human panel.
+  - Local and Tree notes/history retain their original identities and use aliases for shared access. Board attachment preserves previous archives.
+  - Detachment retains read-only counterpart checkpoints. After an owner exits, reads use its reachable saved session or a timestamped retained snapshot with an explicit staleness warning. Counterpart history still needs its live owner.
+  - Remote notes/history attachment is unsupported; board-only attachment remains available.
+
+## 0.2.11
+
+- Shepherdr now tells agents to use an enabled shared board for plans, decisions and findings in substantial multi-agent work, while keeping task assignment and urgent messages in agents. Spawned agents receive the same guidance.
+
+## 0.2.10
+
+- Requires Pi 1.0.0 or later.
+  - Added optional agent-tree message boards with channels, replies, search, subscriptions and persistent folder-local history. Boards require Node.js 22.13 or later.
+  - Added session, exact-folder and global board settings under `/herdr board`. Board notifications reach running turns without waking idle agents.
+  - Board history is stored as plaintext in `.pi/agent-message-board.sqlite` and remains after disabling boards. Keep this archive out of version control and restricted to its intended readers.
+  - Agent messages and worker reports now respect Codex Conversion's saved-Notes idle rollover before waking an idle agent.
+  - Updated coordination guidance to favor asynchronous implementation workers and ending the controller turn when only waiting. Blocked workers are directed to a question-asking tool instead of peer messages, and final replies replace duplicate completion reports.
+
+## 0.2.9
+
+- Non-blocking agent guidance now explicitly permits continued conversation, other work or an immediate reply. Completion and blockage arrive even after a reply, without polling or sleep waits.
+
+## 0.2.8
+
+- Agent profiles now control delegation waiting and shared context.
+  - Removed reviewer-name blocking rules. Optional profile `blocking` forces blocking or asynchronous spawns, and help and list report the configured policy with the profile description.
+  - Added `share_context: false` for independent subagent notes and history. Existing installed profiles remain unchanged.
+
+## 0.2.7
+
+- Added opt-in shared notes and history for spawned agents with Pi Codex Conversion.
+  - New and nested workers receive distinct, persistent context identities before their first task.
+  - Local and Tree context stays in its owning sessions and routes through live controllers and existing SSH connections. Remote storage sharing requires the same Codex account.
+  - Sharing follows **Share subagent context** under `/codex context` and affects new spawns only. Existing agents and ordinary delegation remain unchanged.
+  - Wakeups of existing agents now say “Continue, unless awaiting for user approval.” Fresh-agent startup is unchanged.
+  - Fixed spawned agents dispatching before their persistent Pi session is registered. Profiles using `--no-session` now fail before creating a tab or workspace.
+  - Delegated tasks now guide workers to finish or report blockage with an assistant reply, reserving peer messages for useful mid-run updates rather than waiting or taking over orchestration.
+  - Peer messages now reach the receiving agent's active voice as brief updates, alongside completion reports. Task dispatches and slash commands are not announced.
+
+## 0.2.6
+
+- Fixed exact Ask answer confirmation and retry reconciliation without resending input.
+  - Keep answers pending while the original Ask is still open.
+  - Preserve accepted receipts when the worker's reply fails.
+  - Report dismissed Asks as rejected.
+
+## 0.2.5
+
+- GPT-6 Sol and Luna now share Astra's Codex support.
+  - Removed `/terra`; use `/luna` instead.
+  - Added Responses Lite, non-destructive reasoning changes and terse context guidance for GPT-6 Sol and Luna.
+  - Image descriptions now use GPT-6 Luna directly instead of preferring older mini models.
+  - Cost estimates now use published GPT-6 Sol and Luna rates, including cache writes and long-context pricing.
+  - Agent, review, exploration, web search, voice summary and image-description defaults now use GPT-6; Luna replaces Terra defaults. GPT Switcher retains Luna's 472K context limit, while Codex Conversion defaults all three GPT-6 models to 272K.
+
+## 0.2.4
+
+- Fixed agent answers being refused when prompt or footer text contains "Review". Shepherdr now reads the complete outer Ask panel, including nested text editors, and refuses incomplete captures without sending input.
+
+## 0.2.3
+
+- Fixed context continuity, voice replies, and patch preservation.
+  - V2 compaction preserves the preceding request's reasoning configuration, then starts a fresh baseline without stale overrides. Astra's temporary effort survives continued work across context windows.
+  - Worker updates now accept up to 8 KiB without truncation announcements or offers to read the rest.
+  - Reasoning-summary forwarding now recognizes GPT-6 models.
+  - Replies resume in voice after a context-window rollover, and carried transcripts no longer falsely report that the user ended the call.
+  - Reconnecting voice no longer reposts a cached Voice Context summary.
+  - Added an opt-in plain command output toggle for Code and Notebook modes under `/codex Tools`, keeping command metadata while printing output without JSON escaping.
+  - Notebook cell results report heap and RSS figures only under memory pressure; routine figures remain available through notebook status.
+  - Code and Notebook modes show running-command continuation instructions once per response, preserving the distinction between shell sessions and exec cells.
+  - Notebook syntax errors now point to the original cell source, with generated-code diagnostics labeled separately.
+  - `apply_patch` now preserves existing line endings, unchanged context text, and trailing blank lines, and supports same-drive relative Windows paths.
+  - `apply_patch` rejects repeated source-file sections before writing; multiple hunks in one update remain supported.
+
+- Shepherdr now adds exact-target recovery guidance to agent-not-found errors without changing accepted agent names or pane IDs.
+
+## 0.2.2
+
+- Removed redundant tool guidance from Ask, Shepherdr, Skills and Browser. Code and Notebook Mode now show one callable contract per tool, with detailed Browser and agent rules in help.
+
+## 0.2.1
+
+- Deliver peer messages directly to Pi without submitting unsent human drafts.
+  - Preserve slash-command arguments and use the target session's skill and prompt-template expansion.
+  - Return submission-only acknowledgements for registered extension commands instead of waiting for an assistant reply.
+
+  Requires Pi 0.84.4 or newer. Update and reload Shepherdr on both controllers and workers, and Pi Codex Conversion where installed.
+
+- Fixed idle agent reports and manual checkpoint requests to preserve prompt preparation, coalesce concurrent continuations, and process reports arriving during turn settlement.
+  - Manual Compact reuses notes saved in the last completed turn for Local, Tree, and Remote notes-only windows, avoiding a redundant checkpoint turn. Explicit compaction instructions still request a checkpoint.
+  - Compact tool output now offers Off, On, and Minimal. Minimal keeps nested tool results and an expand hint while hiding the trailing Code / Notebook text preview until expanded. Existing Off and On settings keep their behavior.
+  - Shepherdr help makes local routing explicit: agent calls default to the host running Pi, while unfiltered discovery searches all machines. Remote calls use profile IDs, not machine labels or hostnames.
+  - Fixed Shepherdr startup after a Herdr executable replacement leaves a stale ` (deleted)` path. Recovery silently uses the replacement at the same location. Command failures remain visible and no longer imply that Herdr is outdated.
+
+## 0.2.0
+
+- Shepherdr now reads existing Herdr machine profiles and requires Herdr 0.9 or newer. Manage profiles in Herdr; `shepherdr.json`, old machine aliases and their saved watches are no longer used.
+  - Agent prompts and reports identify their source workspace, tab and pane, including current names.
+  - Attributed messages to running Pi Codex agents use developer steering. Idle tasks retain normal user kickoff and extension preparation.
+  - `send` delivers peer messages without blocking or subscribing; use `assign` to delegate work to an existing agent.
+  - Automatic task watches end on completion or failure. Only explicit `watch` subscriptions persist; legacy watches are cleared with a notice.
+
+## 0.1.6
+
+- Deliver blocked-agent handoffs even when transcripts are unavailable.
+  - Reviewer spawns wait for their result before the controller continues.
+  - Implementation subagents are instructed to work directly rather than delegate implementation again.
+  - Discover and answer Pi Ask questions called inside Code and Notebook Mode.
+  - Retain working local and remote monitoring during connection updates, distinguish incomplete coverage from disconnection, and report recovery.
+  - Worker states now show their last-known status during incomplete monitoring. `/herdr connect` retries without replacing a working remote connection.
+  - Catch worker completions during reconnect setup and cancel obsolete or stopped monitoring connections.
+
+## 0.1.5
+
+- Make the agents tool always available and start fleet monitoring automatically. `/herdr` now toggles only orchestration guidance, not tool availability.
+
+## 0.1.4
+
+- Preserve extension-owned messages while delivering true developer-role policy through compatible Pi Codex Responses adapters.
+  - Add an optional custom-message API that retains caller rendering and restoration fields.
+  - Route Shepherdr's unclaimed worker events and orchestration toggles through it, preserving ordinary Pi delivery when unavailable.
+  - Send review preface/triage policy and realtime voice start/end guidance as developer messages without elevating raw reviewer findings, spoken delegations, or transcript tails.
+  - Keep persisted developer messages in context across model switches, using ordinary Pi conversion on incompatible models.
+
+- Fix worker settlement, custom model preservation, and prompt-only image generation.
+  - Settle Shepherdr workers after Pi expands skill or prompt-template invocations.
+  - Preserve custom Codex models and `models.json` overrides, including after refresh.
+  - Keep optional tool arguments optional in Codex Responses requests while preserving explicit strict sampling.
+  - Treat null image selectors as absent, so prompt-only requests generate rather than edit.
+  - Honor the details toggle in Notebook Mode to hide duplicate output previews.
+  - Show submitted messages without waiting for cached WebSocket warmup, while keeping generation serialized behind it.
+
+## 0.1.3
+
+- Replaced Shepherdr's fire-and-forget tool with persistent blocking and asynchronous agents in normal Pi, Code Mode, and Notebook Mode.
+  - Start, steer, inspect, and answer multiple agents through the `agents` tool.
+  - Customize the bundled general, explorer, and reviewer profiles or add your own.
+  - Activate orchestration mode with `/herdr` when the main session should coordinate agent work.
+
+## 0.1.2
+
+### Changes
+
+- [#298](https://github.com/IgorWarzocha/howaboua-pi-stuff/pull/298) [`b20e7de`](https://github.com/IgorWarzocha/howaboua-pi-stuff/commit/b20e7de137fe89344bc15b06c7e7e0bf02a896b3) Thanks [@IgorWarzocha](https://github.com/IgorWarzocha)! - Orchestrate Pi agents across named remote Herdr machines with automatic SSH bridge deployment and explicit reconnect controls.
+
+## 0.1.1
+
+### Changes
+
+- [#269](https://github.com/IgorWarzocha/howaboua-pi-stuff/pull/269) [`6138ffd`](https://github.com/IgorWarzocha/howaboua-pi-stuff/commit/6138ffd735bb4f7f80e451320dbfd0933a4acaa7) Thanks [@howaclawa](https://github.com/howaclawa)!:
+  - Add shared realtime voice prompts for ask prompts, Auto Trees, Shepherdr settlements, and review progress.
+  - Announce compaction and stream conversational Pi updates after two sentences.
+  - Keep silent tool-step summaries compatible without exposing Chat Completions thinking content.
+  - Configure delegation acknowledgements and deliver V3 delegations immediately.
+  - Preserve late delegations, calls after data-channel closure, prepared Code Mode prompts, and Codex cache continuity.
+  - Reduce LAN playback dropouts with one more jitter-buffer frame.
+
+## 0.1.0
+
+### Changes
+
+- [#256](https://github.com/IgorWarzocha/howaboua-pi-stuff/pull/256) [`4d306ed`](https://github.com/IgorWarzocha/howaboua-pi-stuff/commit/4d306eded0057c82868a1628bd2131a7eedfd7a6) Thanks [@IgorWarzocha](https://github.com/IgorWarzocha)!:
+  - Add Shepherdr, a Herdr-native Pi agent orchestrator with event-driven monitoring and a live fleet widget.
