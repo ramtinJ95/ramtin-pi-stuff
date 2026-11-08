@@ -16,6 +16,7 @@ permissions:
 
 jobs:
   release:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -26,7 +27,11 @@ jobs:
           node-version-file: .node-version
           registry-url: https://registry.npmjs.org
       - uses: oven-sh/setup-bun@v2
+      # Keep the release gate identical to CI, including the Rust renderer tests.
+      - uses: dtolnay/rust-toolchain@stable
       - run: bun run install:ci
+      - name: Check before versioning or publishing
+        run: bun run check
       - name: Version PR or publish
         uses: changesets/action@v2
         with:

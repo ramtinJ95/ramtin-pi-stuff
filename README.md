@@ -32,4 +32,8 @@ node scripts/workspaces.mjs check pi-nexus      # one package
 
 ## Releases
 
-Every user-facing change gets a changeset: run `bun run changeset` and pick the affected packages. When changesets land on `main`, the release workflow opens a "Version Packages" PR. Merging that PR publishes the bumped packages to npm and tags them `@ramtinj95/<package>@<version>`.
+1. Add a changeset to every user-facing change: run `bun run changeset`, pick the affected packages and choose patch, minor or major. Docs-only and test-only changes don't need one.
+2. When the change lands on `main`, the release workflow runs the full checks, then opens or updates the "Version Packages" PR with the new versions and changelogs.
+3. Merge that PR to release. The workflow checks the merged commit again, publishes the bumped packages to npm and tags them `@ramtinj95/<package>@<version>`. A failed check stops the publish.
+
+The release workflow only runs on `main`. Publishing currently authenticates with the `NPM_TOKEN` Actions secret; once npm trusted publishing is configured for every package, `NODE_AUTH_TOKEN` comes out of `release.yml`.
